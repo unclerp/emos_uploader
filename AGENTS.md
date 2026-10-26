@@ -3,7 +3,7 @@
 ## 构建/测试/格式化
 
 - **运行全部可用测试（推荐）:** `pytest tests/unit tests/test_emya_models.py tests/test_organizer.py`
-  （当前 296 passed / 1 failed）
+  （手动规则字段锁定测试已修复，见下方说明）
 - **裸跑 `pytest` 会失败:** `tests/integration/test_integration.py` 在收集阶段就 ImportError
   （见「已知问题」），必须先 `--ignore` 或按上面的方式指定路径
 - **运行单个测试文件:** `pytest tests/unit/test_core/test_renamer.py`
@@ -177,10 +177,10 @@
    - `tests/test_config_loader.py`（2 个）— `config_to_dict` 不再输出 `monitored_dir` 键
    - `tests/test_renamer.py::test_extract_movie_pattern` — `original_filename` 现在返回完整路径
    - 与 `tests/unit/test_core/` 下的同名新测试重复，需要决定删除还是修
-3. **`tests/unit/test_core/test_manual_rule_engine.py::TestManualRuleEngine::test_locked_fields_union` 失败**
-   原因：`get_locked_fields()` 依赖 `apply()` 被调用后累积结果，而测试直接构造引擎后查询，
-   从未调用 `apply()`，导致返回空集合。这是测试与实现语义分歧，需要决定改实现
-   （静态推导 lock_fields）还是改测试。
+3. **手动规则字段锁定测试已修复**
+   `test_locked_fields_union` 现在先确认初始锁集合为空，执行 `apply_rules()` 后再检查锁定结果。
+   `get_locked_fields()` 表示最近一次实际生效的规则锁定结果，不能静态锁定所有规则字段；
+   否则未命中的条件规则也会影响普通文件。此测试应正常运行，不再跳过。
 4. `black` / `mypy` / `flake8` 均无干净基线（见上），仓库无 CI 门禁；
    `.github/workflows/build.yml` 只做打包构建。
 

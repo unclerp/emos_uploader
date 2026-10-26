@@ -199,7 +199,7 @@ class TestConditionalRule(unittest.TestCase):
 
 class TestManualRuleEngine(unittest.TestCase):
     """测试规则引擎整体功能"""
-    
+
     def test_parse_rules_from_config(self):
         config = [
             {"rule": "block: ABC", "enabled": True},
@@ -209,7 +209,7 @@ class TestManualRuleEngine(unittest.TestCase):
         ]
         engine = ManualRuleEngine(config)
         self.assertEqual(len(engine.rules), 4)
-    
+
     def test_apply_multiple_rules(self):
         config = [
             {"rule": "block: 广告"},
@@ -224,7 +224,7 @@ class TestManualRuleEngine(unittest.TestCase):
         self.assertIn("新名", result["_processed_filename"])
         # show_name 也应被修改（ReplaceRule 也会替换 show_name）
         self.assertEqual(result["show_name"], "新名")
-    
+
     def test_locked_fields_union(self):
         config = [
             {"rule": "block: test"},
@@ -232,13 +232,15 @@ class TestManualRuleEngine(unittest.TestCase):
             {"rule": "{[tmdbid=123;type=tv]}"},
         ]
         engine = ManualRuleEngine(config)
+        self.assertEqual(engine.get_locked_fields(), set())
+        engine.apply_rules({"_processed_filename": "test.mkv"}, Path("test.mkv"))
         locked = engine.get_locked_fields()
         # block 和 replace 不锁定任何字段
         # embed 锁定 tmdb_id, douban_id, media_type
         self.assertIn("tmdb_id", locked)
         self.assertIn("media_type", locked)
         self.assertNotIn("show_name", locked)
-    
+
     def test_disabled_rule(self):
         config = [
             {"rule": "block: ABC", "enabled": False},
@@ -246,7 +248,7 @@ class TestManualRuleEngine(unittest.TestCase):
         ]
         engine = ManualRuleEngine(config)
         self.assertEqual(len(engine.rules), 1)  # 只有 enabled 的规则被加载
-    
+
     def test_invalid_rule_skipped(self):
         config = [
             {"rule": "invalid syntax"},
@@ -255,7 +257,7 @@ class TestManualRuleEngine(unittest.TestCase):
         engine = ManualRuleEngine(config)
         self.assertEqual(len(engine.rules), 1)
         self.assertEqual(engine.rules[0].rule_type, "block")
-    
+
     def test_empty_config(self):
         engine = ManualRuleEngine([])
         self.assertEqual(len(engine.rules), 0)

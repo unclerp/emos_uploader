@@ -387,6 +387,25 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                 if rule_str:
                     rules_list.append({"rule": rule_str, "enabled": True})
 
+        # 列表编辑器完整保存顺序和单条启停；ruleN 继续供旧版读取。
+        if "_rules_json" in manual_section:
+            try:
+                stored = json.loads(manual_section["_rules_json"])
+            except (ValueError, TypeError) as exc:
+                raise ValueError("手动规则列表格式无效") from exc
+            if not isinstance(stored, list) or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("rule"), str)
+                or not item["rule"].strip()
+                or not isinstance(item.get("enabled", True), bool)
+                for item in stored
+            ):
+                raise ValueError("手动规则列表必须包含规则文本和布尔启用状态")
+            rules_list = [
+                {"rule": item["rule"].strip(), "enabled": item.get("enabled", True)}
+                for item in stored
+            ]
+        config_dict["manual_rules"].pop("_rules_json", None)
         # 更新 rules 列表
         config_dict["manual_rules"]["rules"] = rules_list
         if rules_list:
@@ -501,7 +520,9 @@ def update_config(
             config[section] = {}
             for key, value in options.items():
                 # manual_rules.rules 由下面的 ruleN 写回，跳过
-                if section == "manual_rules" and (key == "rules" or key.startswith("rule")):
+                if section == "manual_rules" and (
+                    key.startswith("rule") or key == "_rules_json"
+                ):
                     continue
                 if isinstance(value, list):
                     try:
@@ -517,11 +538,18 @@ def update_config(
     manual_rules = config_dict.get("manual_rules", {})
     rules_list = manual_rules.get("rules", [])
     if isinstance(rules_list, list) and "manual_rules" in config:
+        config["manual_rules"]["_rules_json"] = json.dumps(
+            [
+                {"rule": r["rule"].strip(), "enabled": r.get("enabled", True)}
+                for r in rules_list
+            ],
+            ensure_ascii=False,
+        )
         rule_idx = 1
         for rule_entry in rules_list:
             if isinstance(rule_entry, dict):
                 rule_text = rule_entry.get("rule", "").strip()
-                if rule_text:
+                if rule_text and rule_entry.get("enabled", True):
                     config["manual_rules"][f"rule{rule_idx}"] = rule_text
                     rule_idx += 1
 

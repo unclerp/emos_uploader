@@ -85,6 +85,14 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("上传目标必须为 emos、p123、cloud189、yun139，且至少选择一个")
     proc["upload_targets"] = ",".join(targets)
     rules = result.get("manual_rules", {}).get("rules", [])
+    if not isinstance(rules, list) or any(
+        not isinstance(rule, dict)
+        or not isinstance(rule.get("rule"), str)
+        or not rule["rule"].strip()
+        or not isinstance(rule.get("enabled", True), bool)
+        for rule in rules
+    ):
+        raise ValueError("手动规则必须是包含规则文本与启用状态的列表")
     parser = ManualRuleEngine([], enabled=False)
     for rule in rules:
         if rule.get("enabled", True) and not parser._parse_single_rule(

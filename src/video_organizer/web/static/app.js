@@ -600,8 +600,13 @@ function applyConfigSearch() {
 
 function renderConfigEditor() {
     const section = _configCurrentSection;
+    if (section !== 'manual_rules') ManualRulesEditor.detach();
     const empty = document.getElementById('configSearchEmpty');
     if (empty) empty.hidden = true;
+    if (section === 'manual_rules') {
+        ManualRulesEditor.render(el.configEditor, state.config.manual_rules || {});
+        return;
+    }
     if (section === '__llm_providers') {
         renderLlmProviders();
         return;
@@ -818,6 +823,15 @@ async function reloadConfig() {
 }
 
 async function saveConfig() {
+    if (_configCurrentSection === 'manual_rules') {
+        try {
+            const values = ManualRulesEditor.read();
+            const result = await saveConfigToApi('manual_rules', values);
+            await loadConfig();
+            showConfigApplication(result);
+        } catch (error) { showToast(`保存失败：${error.message}`, 'error'); }
+        return;
+    }
     if (_configCurrentSection === 'release_group_mapping') {
         try {
             const input = el.configEditor.querySelector('[name="release_group_mapping.__entries"]');
