@@ -736,11 +736,16 @@ function showConfigApplication(result) {
     refreshConfigApplicationStatus();
 }
 
+let _configApplicationStatusLoading = false;
+
 async function refreshConfigApplicationStatus() {
     const panel = document.getElementById('configApplicationStatus');
-    if (!panel) return;
+    if (!panel || _configApplicationStatusLoading) return;
+    _configApplicationStatusLoading = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     try {
-        const result = await apiRequest('/config/application-status');
+        const result = await apiRequest('/config/application-status', { signal: controller.signal });
         const status = result.application;
         let text = status.status === 'failed' ? '应用失败，旧配置继续运行。' :
             status.status === 'preparing' ? '正在初始化新组件，旧配置继续运行。' : `运行配置版本：${status.version}`;
@@ -750,7 +755,12 @@ async function refreshConfigApplicationStatus() {
             if (generation.error) text += `，${generation.error}`;
         }
         panel.textContent = text;
-    } catch (e) { panel.textContent = `无法获取配置应用状态：${e.message}`; }
+    } catch (e) {
+        panel.textContent = e.name === 'AbortError' ? '读取配置应用状态超时，将自动重试。' : `无法获取配置应用状态：${e.message}`;
+    } finally {
+        clearTimeout(timeout);
+        _configApplicationStatusLoading = false;
+    }
 }
 
 // ===== 保存 / 重新加载 INI 配置 =====
