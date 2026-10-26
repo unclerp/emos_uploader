@@ -173,6 +173,7 @@ function bindEvents() {
         showConfirm('重试全部', '确定要重试所有失败的任务吗？', retryAllFailedTasks);
     });
     el.reloadConfigBtn.addEventListener('click', reloadConfig);
+    setInterval(refreshConfigApplicationStatus, 5000);
     el.saveConfigBtn.addEventListener('click', saveConfig);
     el.logFileSelect.addEventListener('change', loadLogContent);
     el.liveLogCheck.addEventListener('change', toggleLiveLog);
@@ -521,6 +522,7 @@ async function loadConfig() {
     try {
         state.config = await loadConfigFromApi();
         await loadDbConfigs();
+        refreshConfigApplicationStatus();
         renderConfigEditor();
         setupConfigNav();
         setupConfigSearch();
@@ -596,7 +598,7 @@ function renderIniConfigEditor(section) {
 
 function getSectionLabel(section) {
     const labels = {
-        'monitoring': '监控配置', 'tmdb': 'TMDB 配置', 'naming': '命名规则',
+        'monitoring': '监控配置', 'tmdb': 'TMDB 配置', 'naming': '命名规则', 'naming_rules': '命名规则',
         'processing': '处理配置', 'logging': '日志配置',
         'p123': '123云盘', 'cloud189': '天翼云盘', 'yun139': '139云盘',
         'recycle_clean': '回收站清理',
@@ -686,8 +688,8 @@ async function addLlmProvider() {
     const key = document.getElementById('newLpApiKey')?.value.trim();
     if (!name || !url) return showToast('请填写名称和 API URL', 'warning');
     try {
-        await createLlmProviderViaApi({ name, api_url: url, api_key: key || '', model: document.getElementById('newLpModel')?.value.trim() || '' });
-        showToast('提供商已添加', 'success');
+        const application = await createLlmProviderViaApi({ name, api_url: url, api_key: key || '', model: document.getElementById('newLpModel')?.value.trim() || '' });
+        showConfigApplication(application);
         await loadDbConfigs();
         renderLlmProviders();
     } catch (e) { showToast(`添加失败: ${e.message}`, 'error'); }
@@ -698,7 +700,7 @@ window.addLlmProvider = addLlmProvider;
 async function saveLlmProvider(id) {
     const g = (cls) => document.querySelector(`.${cls}[data-id="${id}"]`);
     try {
-        await updateLlmProviderViaApi(id, {
+        const application = await updateLlmProviderViaApi(id, {
             name: g('lp-name')?.value || '',
             api_url: g('lp-url')?.value || '',
             api_key: g('lp-apikey')?.value || '',
@@ -708,7 +710,7 @@ async function saveLlmProvider(id) {
             timeout: parseInt(g('lp-timeout')?.value) || 30,
             max_retries: 2,
         });
-        showToast('提供商已保存', 'success');
+        showConfigApplication(application);
         await loadDbConfigs();
         renderLlmProviders();
     } catch (e) { showToast(`保存失败: ${e.message}`, 'error'); }
@@ -719,8 +721,8 @@ window.saveLlmProvider = saveLlmProvider;
 async function deleteLlmProvider(id) {
     if (!confirm('确定删除此提供商？')) return;
     try {
-        await deleteLlmProviderViaApi(id);
-        showToast('提供商已删除', 'success');
+        const application = await deleteLlmProviderViaApi(id);
+        showConfigApplication(application);
         await loadDbConfigs();
         renderLlmProviders();
     } catch (e) { showToast(`删除失败: ${e.message}`, 'error'); }
@@ -728,13 +730,36 @@ async function deleteLlmProvider(id) {
 
 window.deleteLlmProvider = deleteLlmProvider;
 
+function showConfigApplication(result) {
+    const applied = result.applied === true;
+    showToast(result.message || (applied ? '配置已保存并应用' : '配置已保存，应用失败'), applied ? 'success' : 'warning');
+    refreshConfigApplicationStatus();
+}
+
+async function refreshConfigApplicationStatus() {
+    const panel = document.getElementById('configApplicationStatus');
+    if (!panel) return;
+    try {
+        const result = await apiRequest('/config/application-status');
+        const status = result.application;
+        let text = status.status === 'failed' ? '应用失败，旧配置继续运行。' :
+            status.status === 'preparing' ? '正在初始化新组件，旧配置继续运行。' : `运行配置版本：${status.version}`;
+        if (status.error) text += ` ${status.error}`;
+        for (const generation of status.retiring || []) {
+            text += `；旧版本 ${generation.version}：${generation.active_tasks} 个使用者，等待 ${generation.waiting_seconds} 秒`;
+            if (generation.error) text += `，${generation.error}`;
+        }
+        panel.textContent = text;
+    } catch (e) { panel.textContent = `无法获取配置应用状态：${e.message}`; }
+}
+
 // ===== 保存 / 重新加载 INI 配置 =====
 
 async function reloadConfig() {
     try {
-        await reloadConfigViaApi();
+        const result = await reloadConfigViaApi();
         await loadConfig();
-        showToast('配置已重新加载', 'success');
+        showConfigApplication(result);
     } catch (e) { showToast(`重新加载失败: ${e.message}`, 'error'); }
 }
 
@@ -747,9 +772,9 @@ async function saveConfig() {
                 Object.values(mapping).some(v => !['anime', 'drama', 'movie'].includes(v))) {
                 throw new Error('映射必须是 JSON 对象，类型为 anime、drama 或 movie');
             }
-            await saveConfigToApi('release_group_mapping', mapping, true);
+            const application = await saveConfigToApi('release_group_mapping', mapping, true);
             await loadConfig();
-            showToast('INI 配置已保存', 'success');
+            showConfigApplication(application);
         } catch (e) { showToast(`保存失败: ${e.message}`, 'error'); }
         return;
     }
@@ -775,6 +800,7 @@ async function saveConfig() {
 
     let successCount = 0;
     let failCount = 0;
+    let lastApplication = null;
     for (const [section, data] of Object.entries(sections)) {
         try {
             const current = state.config[section] || {};
@@ -785,7 +811,7 @@ async function saveConfig() {
                 }
             }
             if (Object.keys(changed).length === 0) { successCount++; continue; }
-            await saveConfigToApi(section, changed);
+            lastApplication = await saveConfigToApi(section, changed);
             await loadConfig();
             successCount++;
         } catch (e) {
@@ -795,7 +821,8 @@ async function saveConfig() {
     }
 
     if (failCount === 0) {
-        showToast(`配置已保存（${successCount} 节）`, 'success');
+        if (lastApplication) showConfigApplication(lastApplication);
+        else showToast('配置没有变化', 'success');
     } else {
         showToast(`保存完成: ${successCount} 节成功, ${failCount} 节失败`, 'warning');
     }

@@ -52,7 +52,7 @@ def test_llm_provider_still_prefers_database(monkeypatch):
     from video_organizer.core.renamer import renamer as module
     provider = {"name": "database-provider", "api_url": "https://example.com", "api_key": "db-key", "model": "db-model"}
     database = MagicMock(return_value=[provider])
-    monkeypatch.setitem(sys.modules, "src.video_organizer.database.config_operations", SimpleNamespace(get_llm_providers=database))
+    monkeypatch.setattr(config_operations, "get_llm_providers", database)
     factory = MagicMock()
     factory.return_value.enabled = True
     factory.return_value.providers = [provider]
@@ -115,6 +115,8 @@ def test_ini_runtime_endpoint_remains_editable(client, monkeypatch, tmp_path):
     update_config(config, str(path))
     state = MagicMock()
     state.get_config.return_value = config
+    state.get_saved_config.return_value = config
+    state.apply_config.return_value = {"applied": True, "message": "配置已保存并应用"}
     state.get_config_path.return_value = path
     monkeypatch.setattr(config_routes, "get_state_manager", lambda: state)
     response = client.put("/api/config/section", json={"section": "processing", "values": {"delete_after_upload": True}})
@@ -129,6 +131,8 @@ def test_mapping_replacement_removes_old_entries(client, monkeypatch, tmp_path):
     update_config(config, str(path))
     state = MagicMock()
     state.get_config.return_value = config
+    state.get_saved_config.return_value = config
+    state.apply_config.return_value = {"applied": True, "message": "配置已保存并应用"}
     state.get_config_path.return_value = path
     monkeypatch.setattr(config_routes, "get_state_manager", lambda: state)
     response = client.put("/api/config/section", json={"section": "release_group_mapping", "values": {"NewGroup": "drama"}, "replace": True})

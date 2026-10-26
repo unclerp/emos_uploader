@@ -202,6 +202,28 @@ class DatabaseManager:
         logger.info("数据库连接已关闭")
 
     @classmethod
+    def independent(cls, config):
+        """创建非全局连接池，用于配置版本间的平滑切换。"""
+        instance = object.__new__(cls)
+        instance._engine = None
+        instance._session_factory = None
+        instance._scoped_session = None
+        allowed = (
+            "host",
+            "port",
+            "user",
+            "password",
+            "database",
+            "charset",
+            "pool_size",
+            "max_overflow",
+            "pool_recycle",
+            "echo",
+        )
+        instance.__init__(**{k: v for k, v in config.items() if k in allowed})
+        return instance
+
+    @classmethod
     def get_instance(cls) -> "DatabaseManager":
         """获取单例实例"""
         if cls._instance is None:

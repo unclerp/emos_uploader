@@ -3,6 +3,7 @@ File system monitoring module.
 """
 
 import logging
+import copy
 import os
 import shutil
 import time
@@ -43,6 +44,7 @@ class FileSystemMonitor:
         self.tmdb_api_key = tmdb_api_key
         self.ai_service_url = ai_service_url
         self.config = config  # 保存配置对象，用于路径映射等功能
+        self._runtime_manager = None
         self.processed_files = set()  # 存储已处理文件的集合，避免重复处理
         self._processing_lock = threading.Lock()  # 线程锁，保护文件处理逻辑
         self._retry_files = set()  # 需要重试的文件
@@ -106,6 +108,8 @@ class FileSystemMonitor:
             return
 
         for config in self.downloader_configs:
+            if str(config.get("enabled", True)).strip().lower() in ("false", "0", "no", "off"):
+                continue
             downloader_type = config.get("type")
             if not downloader_type:
                 logger.error("Downloader config missing 'type' field, skipping")
@@ -193,6 +197,14 @@ class FileSystemMonitor:
                 logger.info(f"  轮询间隔: {self.directory_polling_interval}秒")
 
     def _on_download_completed(self, file_path: str, downloader_monitor=None):
+        if self._runtime_manager:
+            with self._runtime_manager.lease() as generation:
+                return generation.monitor._on_download_completed_snapshot(
+                    file_path, downloader_monitor
+                )
+        return self._on_download_completed_snapshot(file_path, downloader_monitor)
+
+    def _on_download_completed_snapshot(self, file_path: str, downloader_monitor=None):
         """
         Callback function to handle download completion events from downloaders.
 
@@ -204,7 +216,7 @@ class FileSystemMonitor:
             bool: True 或 None 表示成功处理，False 表示需要重试
         """
         logger.info(f"Received download completion event for: {file_path}")
-        
+
         # 解码 URL 编码的文件路径
         decoded_file_path = decode_file_path(file_path)
         logger.debug(f"Decoded file path from {file_path} to {decoded_file_path}")
@@ -220,7 +232,7 @@ class FileSystemMonitor:
         # 应用路径映射，将下载器返回的路径转换为主机实际路径
         mapped_file_path = self._apply_path_mapping(decoded_file_path)
         logger.debug(f"Mapped file path from {decoded_file_path} to {mapped_file_path}")
-        
+
         # 智能解析文件路径（处理 aria2 返回解码路径但文件名实际是 URL 编码的情况）
         resolved_file_path = resolve_file_path(mapped_file_path)
         if resolved_file_path != mapped_file_path:
@@ -309,7 +321,61 @@ class FileSystemMonitor:
         # 如果没有找到匹配的映射规则，则返回原始路径
         return file_path
 
+    def prepare_live_config(self, config, handler):
+        """预构建监控参数，不启动线程、不修改现有监控状态。"""
+        candidate = copy.copy(self)
+        candidate.config = config
+        candidate.event_handler = handler
+        candidate.supported_extensions = config.get("monitoring", {}).get(
+            "supported_extensions", []
+        )
+        candidate.downloader_configs = config.get("downloaders", [])
+        candidate.downloader_monitors = []
+        candidate._init_downloader_monitors()
+        for downloader in candidate.downloader_monitors:
+            previous = next(
+                (
+                    old
+                    for old in self.downloader_monitors
+                    if type(old) is type(downloader)
+                    and getattr(old, "rpc_url", None)
+                    == getattr(downloader, "rpc_url", None)
+                ),
+                None,
+            )
+            if previous:
+                # 同一下载器的种子可能跨配置版本完成，完成记录必须共享。
+                for name in (
+                    "_processed_files",
+                    "_processed_torrents",
+                    "_processed_downloads",
+                    "_upload_completed_files",
+                ):
+                    if hasattr(previous, name):
+                        setattr(downloader, name, getattr(previous, name))
+        candidate._init_directory_monitor()
+        settings = config.get("monitoring", {})
+        if (
+            settings.get("enable_directory_monitor")
+            and not candidate.directory_monitor_enabled
+        ):
+            raise ValueError("监控目录不存在或输出目录不可写")
+        # 文件去重状态跨配置代共享，不能在切换后重复整理。
+        for name in (
+            "_directory_processed_files",
+            "_directory_processed_dirs",
+            "_directory_successfully_processed_files",
+        ):
+            setattr(candidate, name, getattr(self, name))
+        return candidate
+
     def _scan_directory_for_new_files(self):
+        if self._runtime_manager:
+            with self._runtime_manager.lease() as generation:
+                return generation.monitor._scan_directory_for_new_files_snapshot()
+        return self._scan_directory_for_new_files_snapshot()
+
+    def _scan_directory_for_new_files_snapshot(self):
         """
         扫描监控目录，查找新的视频文件
         """
@@ -335,10 +401,17 @@ class FileSystemMonitor:
                             logger.info(f"发现新文件: {file_path_str}")
                             self._directory_processed_files.add(file_path_str)
                             # 在新线程中处理文件
-                            threading.Thread(
-                                target=self._process_directory_file,
-                                args=(file_path_str,),
-                            ).start()
+                            if self._runtime_manager:
+                                self._runtime_manager.spawn(
+                                    self._live_generation,
+                                    self._process_directory_file,
+                                    file_path_str,
+                                )
+                            else:
+                                threading.Thread(
+                                    target=self._process_directory_file,
+                                    args=(file_path_str,),
+                                ).start()
         except Exception as e:
             logger.error(f"扫描目录时发生错误: {e}")
 
@@ -368,7 +441,7 @@ class FileSystemMonitor:
             removed_count = 0
             for dir_path_str in sorted_dirs:
                 dir_path = Path(dir_path_str)
-                
+
                 # 检查目录是否存在
                 if not dir_path.exists() or not dir_path.is_dir():
                     logger.debug(f"目录不存在或不是目录，跳过: {dir_path}")
@@ -385,7 +458,7 @@ class FileSystemMonitor:
                             has_video_files = True
                             file_path_str = str(file_path)
                             video_files_in_dir.append(file_path_str)
-                            
+
                             # 检查文件是否在成功整理的列表中
                             if file_path_str not in self._directory_successfully_processed_files:
                                 all_files_processed = False
@@ -417,11 +490,11 @@ class FileSystemMonitor:
                             logger.info(f"目录为空且所有文件已处理，删除目录: {dir_path}")
                             dir_path.rmdir()
                             removed_count += 1
-                            
+
                             # 递归删除父目录
                             parent_dir = dir_path.parent
                             watch_dir_resolved = self.directory_watch_dir.resolve()
-                            
+
                             while parent_dir != watch_dir_resolved and parent_dir != parent_dir.parent:
                                 # 检查父目录是否存在且为空
                                 if parent_dir.exists() and not any(parent_dir.iterdir()):
@@ -494,6 +567,18 @@ class FileSystemMonitor:
             return False
 
     def _process_directory_file(self, file_path: str):
+        if self._runtime_manager:
+            from ...web.services.state import get_state_manager
+
+            snapshot = copy.copy(self)
+            snapshot.event_handler = copy.copy(self.event_handler)
+            snapshot.event_handler.renamer = get_state_manager().make_task_renamer(
+                self.config
+            )
+            return snapshot._process_directory_file_snapshot(file_path)
+        return self._process_directory_file_snapshot(file_path)
+
+    def _process_directory_file_snapshot(self, file_path: str):
         """
         处理目录监控中发现的新文件
 
@@ -794,7 +879,7 @@ class FileSystemMonitor:
 
     def _save_json_metadata(self, json_path: Path, metadata: dict):
 
-            """
+        """
 
             保存 JSON 格式的元数据
 
@@ -808,19 +893,17 @@ class FileSystemMonitor:
 
             """
 
-            import json
-
-    
+        import json
 
             # 保存 JSON 文件
 
-            with open(json_path, 'w', encoding='utf-8') as f:
+        with open(json_path, 'w', encoding='utf-8') as f:
 
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-    
 
-            logger.info(f"JSON 元数据已保存: {json_path}")
+
+        logger.info(f"JSON 元数据已保存: {json_path}")
 
     def _download_images_for_series(self, series_dir: Path, metadata: dict):
         """
@@ -892,11 +975,12 @@ class FileSystemMonitor:
         """
         # 启动下载器监控器
         for monitor in self.downloader_monitors:
-            monitor.start()
+            if not getattr(monitor, "running", False):
+                monitor.start()
 
         # 启动目录监控线程
         directory_monitor_thread = None
-        if self.directory_monitor_enabled:
+        if True:  # 始终保留轻量扫描循环，支持稍后通过网页启用目录监控。
             directory_monitor_thread = threading.Thread(target=self._directory_monitor_loop)
             directory_monitor_thread.daemon = True
             directory_monitor_thread.start()
@@ -1006,14 +1090,24 @@ class FileSystemMonitor:
                 logger.error(f"目录监控循环发生错误: {e}")
 
             # 等待指定的轮询间隔
-            self.stop_event.wait(self.directory_polling_interval)
+            interval = self.directory_polling_interval
+            if self._runtime_manager and self._runtime_manager.current:
+                interval = (
+                    self._runtime_manager.current.monitor.directory_polling_interval
+                )
+            self.stop_event.wait(interval)
 
         logger.info("目录监控循环已停止")
 
     def stop(self):
         """Stop monitoring."""
         # 停止下载器监控器
-        for monitor in self.downloader_monitors:
+        monitors = (
+            self._runtime_manager.current.monitor.downloader_monitors
+            if self._runtime_manager and self._runtime_manager.current.monitor
+            else self.downloader_monitors
+        )
+        for monitor in monitors:
             monitor.stop()
 
         self.stop_event.set()

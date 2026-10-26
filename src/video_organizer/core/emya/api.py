@@ -156,6 +156,7 @@ class EmyaApiController:
         db_config: Optional[Dict] = None,
         default_user_id: Optional[int] = None,
         tmdb_config: Optional[Dict] = None,
+        independent: bool = False,
     ):
         """
         初始化控制器
@@ -165,9 +166,17 @@ class EmyaApiController:
             default_user_id: 默认用户ID
             tmdb_config: TMDB API 配置（用于视频识别）
         """
-        if db_config:
+        db = None
+        if independent and db_config:
+            from ..db_manager import DatabaseManager
+
+            db = DatabaseManager.independent(db_config)
+            if not db.test_connection():
+                db.close()
+                raise ValueError("emya 数据库连接验证失败")
+        elif db_config:
             init_db(db_config)
-        self.service = EmyaService(default_user_id=default_user_id)
+        self.service = EmyaService(default_user_id=default_user_id, db=db)
         self.tmdb_config = tmdb_config
         self._renamer = None
 
@@ -325,7 +334,7 @@ class EmyaApiController:
                                 "title": request.episode_title or f"第{request.episode_number}集",
                             })
                         break
-                
+
                 if not season_found:
                     seasons.append({
                         "season_number": request.season_number,

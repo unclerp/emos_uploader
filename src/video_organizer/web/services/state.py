@@ -6,6 +6,8 @@
 """
 
 import threading
+import copy
+from contextlib import contextmanager
 import logging
 import asyncio
 from typing import Any, Dict, List, Optional, Set, Callable
@@ -63,10 +65,10 @@ class StateManager:
     管理 VideoFileHandler 实例和全局状态，
     为 Web API 提供统一的状态访问接口。
     """
-    
+
     _instance: Optional["StateManager"] = None
     _lock: threading.Lock = threading.Lock()
-    
+
     def __new__(cls) -> "StateManager":
         if cls._instance is None:
             with cls._lock:
@@ -74,66 +76,143 @@ class StateManager:
                     cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self):
         if self._initialized:
             return
         self._initialized = True
-        
+
         self._logger = logging.getLogger(__name__)
-        
+
         # VideoFileHandler 引用
         self._video_handler: Any = None
         self._config: Dict[str, Any] = {}
         self._config_path: Optional[Path] = None
-        
+
         # 下载器监控器列表
         self._downloader_monitors: List[Any] = []
-        
+
         # TMDB 共享客户端（懒初始化，进程内复用限速预算与缓存）
         self._tmdb_client: Any = None
-        
+
         # 系统运行状态
         self._system_running: bool = False
-        
+
         # 任务历史记录（最近 1000 条）
         self._task_history: List[TaskInfo] = []
         self._max_history: int = 1000
-        
+
         # 上传进度追踪
         self._upload_progress: Dict[str, UploadProgress] = {}  # file_path -> UploadProgress
         self._progress_callbacks: List[Callable] = []  # 进度更新回调列表
-        
+
         # 仪表盘更新回调
         self._dashboard_callbacks: List[Callable] = []
-        
+
         # 状态锁
-        self._state_lock = threading.Lock()
-    
+        self._state_lock = threading.RLock()
+        self._live_config = None
+
     def set_video_handler(self, handler: Any) -> None:
         """设置 VideoFileHandler 实例"""
         with self._state_lock:
             self._video_handler = handler
             self._logger.info("VideoHandler 实例已设置")
-    
+
     def get_video_handler(self) -> Optional[Any]:
         """获取 VideoFileHandler 实例"""
-        return self._video_handler
-    
+        from .live_config import borrowed_generation
+
+        generation = borrowed_generation.get()
+        if generation is None and self._live_config:
+            generation = self._live_config.current
+        return generation.handler if generation else self._video_handler
+
     def set_config(self, config: Dict[str, Any], config_path: Optional[Path] = None) -> None:
         """设置配置"""
         with self._state_lock:
-            self._config = config
-            self._config_path = config_path
-    
+            self._config = copy.deepcopy(config)
+            if config_path is not None:
+                self._config_path = Path(config_path)
+
     def get_config(self) -> Dict[str, Any]:
         """获取配置"""
-        return self._config.copy()
-    
+        from .live_config import borrowed_generation
+
+        generation = borrowed_generation.get()
+        return copy.deepcopy(generation.config if generation else self._config)
+
+    def get_saved_config(self):
+        """编辑页展示已保存配置；与当前仍在运行的配置代明确区分。"""
+        with self._state_lock:
+            return copy.deepcopy(self._config)
+
+    def enable_live_config(
+        self, config, config_path=None, monitor=None, cleaner=None, tracker=None
+    ):
+        from .live_config import LiveConfig
+        from ...core.config_loader import get_default_config_path
+
+        self.set_config(config, Path(config_path or get_default_config_path()))
+        if self._live_config is None:
+            self._live_config = LiveConfig(self)
+            self._live_config.attach(
+                config, self._video_handler, monitor, cleaner, tracker
+            )
+        elif (monitor is not None and self._live_config.monitor is None) or (
+            self._live_config.root is None and self._video_handler is not None
+        ):
+            # web.app 的导入会先创建无处理器的应用；主程序随后注册真实运行组件。
+            self._live_config.attach(
+                config, self._video_handler, monitor, cleaner, tracker
+            )
+        return self._live_config
+
+    def apply_config(self, config, config_path=None):
+        manager = self._live_config or self.enable_live_config(
+            self._config, self._config_path
+        )
+        # 持久化值可以与旧任务使用的配置不同，失败时也不能误报已生效。
+        self.set_config(config, config_path)
+        return manager.apply(config, self._config_path)
+
+    def get_config_application_status(self):
+        return (
+            self._live_config.status()
+            if self._live_config
+            else {"status": "idle", "version": 0, "retiring": [], "error": ""}
+        )
+
+    @contextmanager
+    def borrow_components(self):
+        if self._live_config and self._live_config.current:
+            with self._live_config.lease() as generation:
+                yield generation
+        else:
+            yield None
+
+    def make_task_renamer(self, config):
+        from ...core.renamer import VideoRenamer
+        from ...core.manual_rule_engine import ManualRuleEngine
+
+        handler = self.get_video_handler()
+        if handler and getattr(handler, "renamer", None):
+            renamer = copy.copy(handler.renamer)
+            settings = config.get("manual_rules", {})
+            renamer.rule_engine = ManualRuleEngine(
+                settings.get("rules", []), enabled=settings.get("enabled", False)
+            )
+            return renamer
+        return VideoRenamer(
+            tmdb_api_key=config.get("tmdb", {}).get("api_key", ""),
+            naming_rules=config.get("naming_rules"),
+            config=config,
+        )
+
     def get_config_path(self) -> Optional[Path]:
         """获取配置文件路径"""
         return self._config_path
-    
+
     def get_tmdb_client(self):
         """
         获取共享 TMDB 客户端（懒初始化单例）。
@@ -141,10 +220,13 @@ class StateManager:
         复用限速预算与请求缓存，避免每个请求新建客户端导致限速计数互不共享。
         无 api_key 或初始化失败时返回 None。
         """
+        handler = self.get_video_handler()
+        if handler and getattr(handler, "renamer", None):
+            return handler.renamer.tmdb_client
         if self._tmdb_client is not None:
             return self._tmdb_client
         from ...core.tmdb_client import TMDBClient
-        
+
         with self._state_lock:
             if self._tmdb_client is not None:
                 return self._tmdb_client
@@ -165,16 +247,25 @@ class StateManager:
                 self._logger.error(f"初始化共享 TMDB 客户端失败: {e}")
                 self._tmdb_client = None
             return self._tmdb_client
-    
+
     def set_downloader_monitors(self, monitors: List[Any]) -> None:
         """设置下载器监控器列表"""
         with self._state_lock:
             self._downloader_monitors = monitors
-    
+
     def get_downloader_monitors(self) -> List[Any]:
         """获取下载器监控器列表"""
-        return self._downloader_monitors.copy()
-    
+        from .live_config import borrowed_generation
+
+        generation = borrowed_generation.get()
+        if generation is None and self._live_config:
+            generation = self._live_config.current
+        return (
+            generation.monitor.downloader_monitors
+            if generation and generation.monitor
+            else self._downloader_monitors
+        )
+
     def get_cloud_client(self, provider: str):
         """
         获取云盘客户端实例
@@ -185,7 +276,7 @@ class StateManager:
         Returns:
             云盘客户端实例，如果不可用则返回 None
         """
-        handler = self._video_handler
+        handler = self.get_video_handler()
         if not handler:
             return None
         if provider == "cloud189" and hasattr(handler, "cloud189_uploader"):
@@ -195,42 +286,42 @@ class StateManager:
             uploader = handler.yun139_uploader
             return uploader.client if uploader else None
         return None
-    
+
     def set_system_running(self, running: bool) -> None:
         """设置系统运行状态"""
         self._system_running = running
-    
+
     def is_system_running(self) -> bool:
         """获取系统运行状态"""
         return self._system_running
-    
+
     def get_system_status(self) -> SystemStatus:
         """获取系统状态"""
         status = SystemStatus(
             is_running=self._system_running,
             last_update=datetime.now()
         )
-        
+
         if self._video_handler is None:
             return status
-        
+
         try:
             handler = self._video_handler
-            
+
             # 获取队列状态
             if hasattr(handler, "_upload_queue"):
                 status.queue_size = handler._upload_queue.qsize()
-            
+
             # 获取处理状态
             if hasattr(handler, "_processing_files"):
                 status.processing_count = len(handler._processing_files)
-            
+
             if hasattr(handler, "_uploading_files"):
                 status.uploading_count = len(handler._uploading_files)
-            
+
             runtime_completed = len(handler._uploaded_files) if hasattr(handler, "_uploaded_files") else 0
             runtime_failed = len(handler._failed_files) if hasattr(handler, "_failed_files") else 0
-            
+
             # 从数据库获取持久化计数（重启后不丢失），取与运行时计数的较大值
             try:
                 db_counts = db_get_task_counts()
@@ -239,82 +330,82 @@ class StateManager:
             except Exception:
                 status.completed_count = runtime_completed
                 status.failed_count = runtime_failed
-                
+
         except Exception as e:
             self._logger.error(f"获取系统状态失败: {e}")
-        
+
         return status
-    
+
     def get_queued_files(self) -> List[str]:
         """获取队列中的文件列表"""
         if self._video_handler is None:
             return []
-        
+
         try:
             handler = self._video_handler
             if hasattr(handler, "_queued_files"):
                 return list(handler._queued_files)
         except Exception as e:
             self._logger.error(f"获取队列文件失败: {e}")
-        
+
         return []
-    
+
     def get_processing_files(self) -> List[str]:
         """获取正在处理的文件列表"""
         if self._video_handler is None:
             return []
-        
+
         try:
             handler = self._video_handler
             if hasattr(handler, "_processing_files"):
                 return list(handler._processing_files)
         except Exception as e:
             self._logger.error(f"获取处理中文件失败: {e}")
-        
+
         return []
-    
+
     def get_uploading_files(self) -> List[str]:
         """获取正在上传的文件列表"""
         if self._video_handler is None:
             return []
-        
+
         try:
             handler = self._video_handler
             if hasattr(handler, "_uploading_files"):
                 return list(handler._uploading_files)
         except Exception as e:
             self._logger.error(f"获取上传中文件失败: {e}")
-        
+
         return []
-    
+
     def get_completed_files(self) -> List[str]:
         """获取已完成的文件列表"""
         if self._video_handler is None:
             return []
-        
+
         try:
             handler = self._video_handler
             if hasattr(handler, "_uploaded_files"):
                 return list(handler._uploaded_files)
         except Exception as e:
             self._logger.error(f"获取已完成文件失败: {e}")
-        
+
         return []
-    
+
     def get_failed_files(self) -> Dict[str, str]:
         """获取失败的文件及错误信息"""
         if self._video_handler is None:
             return {}
-        
+
         try:
             handler = self._video_handler
             if hasattr(handler, "_failed_files"):
                 return dict(handler._failed_files)
         except Exception as e:
             self._logger.error(f"获取失败文件失败: {e}")
-        
+
         return {}
-    
+
     def get_completed_with_time(self) -> List[Dict]:
         """
         获取已完成的文件列表（含时间戳）
@@ -341,7 +432,7 @@ class StateManager:
         result = [{"path": p, "time": t} for p, t in seen.items()]
         result.sort(key=lambda x: x["time"] or "", reverse=True)
         return result[:200]
-    
+
     def get_failed_with_time(self) -> Dict[str, Dict]:
         """
         获取失败的文件列表（含时间戳）
@@ -367,31 +458,31 @@ class StateManager:
         except Exception:
             pass
         return dict(list(result.items())[:200])
-    
+
     def add_task_history(self, task: TaskInfo) -> None:
         """添加任务历史记录"""
         with self._state_lock:
             self._task_history.append(task)
             if len(self._task_history) > self._max_history:
                 self._task_history = self._task_history[-self._max_history:]
-    
+
     def get_task_history(self, limit: int = 100) -> List[TaskInfo]:
         """获取任务历史记录"""
         return self._task_history[-limit:]
-    
+
     # ========== 上传进度管理 ==========
-    
+
     def register_progress_callback(self, callback: Callable) -> None:
         """注册进度更新回调"""
         with self._state_lock:
             self._progress_callbacks.append(callback)
-    
+
     def unregister_progress_callback(self, callback: Callable) -> None:
         """注销进度更新回调"""
         with self._state_lock:
             if callback in self._progress_callbacks:
                 self._progress_callbacks.remove(callback)
-    
+
     def update_upload_progress(self, progress: UploadProgress) -> None:
         """
         更新上传进度
@@ -401,22 +492,22 @@ class StateManager:
         """
         with self._state_lock:
             self._upload_progress[progress.file_path] = progress
-            
+
             # 调用所有回调
             for callback in self._progress_callbacks:
                 try:
                     callback(progress)
                 except Exception as e:
                     self._logger.error(f"进度回调执行失败: {e}")
-    
+
     def get_upload_progress(self, file_path: str) -> Optional[UploadProgress]:
         """获取指定文件的上传进度"""
         return self._upload_progress.get(file_path)
-    
+
     def get_all_upload_progress(self) -> Dict[str, UploadProgress]:
         """获取所有上传进度"""
         return self._upload_progress.copy()
-    
+
     def clear_upload_progress(self, file_path: str) -> None:
         """清除指定文件的上传进度"""
         with self._state_lock:

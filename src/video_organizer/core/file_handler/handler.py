@@ -116,6 +116,8 @@ class VideoFileHandler:
         telegram_config: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None,
         emya_db_config: Optional[Dict[str, Any]] = None,
+        start_workers: bool = True,
+        strict: bool = False,
     ):
         """
         初始化视频文件处理器
@@ -132,6 +134,10 @@ class VideoFileHandler:
         """
         # 初始化日志记录器
         self.logger = get_logger(__name__)
+        self._strict_runtime = strict
+        self._worker_threads = []
+        self._worker_condition = threading.Condition()
+        self._runtime_manager = None
 
         self.output_dir = output_dir
         self.supported_extensions = supported_extensions
@@ -271,21 +277,6 @@ class VideoFileHandler:
         # 初始化 Telegram 配置
         self.telegram_config = telegram_config or {}
 
-        # 初始化TMDB客户端
-        tmdb_client = None
-        if tmdb_config and tmdb_config.get("api_key"):
-            try:
-                tmdb_client = TMDBClient(
-                    api_key=tmdb_config["api_key"],
-                    retry_count=tmdb_config.get("retry_count", 3),
-                    timeout=tmdb_config.get("timeout", 30),
-                    base_url=tmdb_config.get("base_url"),
-                    rate_limit_per_sec=tmdb_config.get("rate_limit_per_sec"),
-                )
-                self.logger.info("TMDB客户端初始化成功")
-            except Exception as e:
-                log_failure(self.logger, "初始化TMDB客户端失败", error=e)
-
         # 初始化 123 云盘上传器
         self.p123_uploader = None
         if self.p123_token or (self.p123_username and self.p123_password):
@@ -303,6 +294,8 @@ class VideoFileHandler:
                 self.logger.info("123云盘上传器初始化成功")
             except Exception as e:
                 self.logger.error(f"初始化123云盘上传器失败: {e}")
+                if strict:
+                    raise
 
         # 初始化天翼云盘上传器
         self.cloud189_uploader = None
@@ -325,6 +318,8 @@ class VideoFileHandler:
                 self.logger.info("天翼云盘上传器初始化成功")
             except Exception as e:
                 self.logger.error(f"初始化天翼云盘上传器失败: {e}")
+                if strict:
+                    raise
 
         # 初始化 139 云盘上传器
         self.yun139_uploader = None
@@ -350,13 +345,16 @@ class VideoFileHandler:
                 )
                 # 如果 yun139 配置了 max_workers，则覆盖全局设置
                 if self.yun139_max_workers > 0:
-                    self.max_upload_workers = self.yun139_max_workers
+                    if "max_upload_workers" not in self.processing_config:
+                        self.max_upload_workers = self.yun139_max_workers
                     self.logger.info(
                         f"139云盘使用自定义并发数: {self.yun139_max_workers}"
                     )
                 self.logger.info("139云盘上传器初始化成功")
             except Exception as e:
                 self.logger.error(f"初始化139云盘上传器失败: {e}")
+                if strict:
+                    raise
 
         # 初始化文件重命名器
         try:
@@ -370,6 +368,8 @@ class VideoFileHandler:
             self.logger.info("视频重命名器初始化成功")
         except Exception as e:
             log_exception(self.logger, "初始化视频重命名器失败")
+            if strict:
+                raise
             # 创建一个基本的重命名器作为后备
             self.renamer = VideoRenamer(tmdb_api_key=None)
 
@@ -388,7 +388,7 @@ class VideoFileHandler:
 
         if self.emya_enabled:
             try:
-                from ..emya.api import init_controller, EmyaApiController
+                from ..emya.api import EmyaApiController
 
                 # 初始化数据库连接
                 db_config = {
@@ -403,13 +403,16 @@ class VideoFileHandler:
                     "pool_recycle": self.emya_db_config.get("pool_recycle", 3600),
                 }
 
-                self.emya_controller = init_controller(
+                self.emya_controller = EmyaApiController(
+                    independent=True,
                     db_config=db_config,
                     default_user_id=self.emya_db_config.get("default_user_id", 1),
                 )
                 self.logger.info("emya 数据库入库功能初始化成功")
             except Exception as e:
                 self.logger.error(f"初始化 emya 数据库入库功能失败: {e}")
+                if strict:
+                    raise
                 self.emya_enabled = False
 
         # 父监控器引用
@@ -417,7 +420,10 @@ class VideoFileHandler:
 
         # 初始化任务历史数据库（失败不阻塞）
         try:
-            init_task_db()
+            if start_workers:
+                from ...database.session import get_session_local
+
+                get_session_local()
         except Exception:
             self.logger.warning("初始化任务历史数据库失败（部分功能可能受限）")
 
@@ -445,7 +451,8 @@ class VideoFileHandler:
         self.downloaders = []
 
         # 启动上传队列处理线程
-        self._start_upload_queue()
+        if start_workers:
+            self._start_upload_queue()
 
     def add_downloader(self, downloader):
         """
@@ -611,25 +618,26 @@ class VideoFileHandler:
             return False
 
     def _start_upload_queue(self):
-        """
-        启动上传队列处理线程
-        """
-        print(f"DEBUG: 尝试启动上传队列处理线程... 当前状态: {self._queue_running}")
-        with threading.Lock():
-            if not self._queue_running:
-                self._queue_running = True
+        """队列只创建一次；缩容不打断正在执行的任务。"""
+        with self._worker_condition:
+            self._queue_running = True
+            self._resize_workers_locked()
 
-                print(f"DEBUG: 正在启动 {self.max_upload_workers} 个工作线程...")
-                # 启动指定数量的消费者线程
-                for i in range(self.max_upload_workers):
-                    thread = threading.Thread(
-                        target=self._worker_process_queue, args=(i + 1,), daemon=True
-                    )
-                    thread.start()
-                    self.logger.info(f"上传工作线程 #{i+1} 已启动")
-                    print(f"DEBUG: 工作线程 #{i+1} 已启动")
-            else:
-                print("DEBUG: 队列已经在运行中")
+    def _resize_workers_locked(self):
+        while len(self._worker_threads) < self.max_upload_workers:
+            worker_id = len(self._worker_threads) + 1
+            thread = threading.Thread(
+                target=self._worker_process_queue, args=(worker_id,), daemon=True
+            )
+            self._worker_threads.append(thread)
+            thread.start()
+        self._worker_condition.notify_all()
+
+    def resize_workers(self, count):
+        with self._worker_condition:
+            self.max_upload_workers = count
+            if self._queue_running:
+                self._resize_workers_locked()
 
     def _worker_process_queue(self, worker_id):
         """
@@ -639,6 +647,13 @@ class VideoFileHandler:
         """
         print(f"DEBUG: 工作线程 #{worker_id} 进入主循环")
         while self._queue_running:
+            with self._worker_condition:
+                self._worker_condition.wait_for(
+                    lambda: not self._queue_running
+                    or worker_id <= self.max_upload_workers
+                )
+            if not self._queue_running:
+                break
             try:
                 # print(f"DEBUG: 工作线程 #{worker_id} 等待任务...")
                 # 从队列中获取文件路径，超时1秒
@@ -647,6 +662,12 @@ class VideoFileHandler:
                     self._upload_queue.task_done()
                     print(f"DEBUG: 工作线程 #{worker_id} 收到退出信号")
                     break
+
+                if worker_id > self.max_upload_workers:
+                    # 缩容时已阻塞在 get() 的线程不能再开始新任务。
+                    self._upload_queue.put(file_path)
+                    self._upload_queue.task_done()
+                    continue
 
                 # 为当前文件的处理设置日志标识，之后产生的日志都会带上 [编号 文件名]
                 set_file_id(file_path)
@@ -711,6 +732,7 @@ class VideoFileHandler:
             console_log(f"{'='*80}\n")
             uploader = RobustEmosVideoUploader(
                 self.emos_auth_token,
+                base_url=self.emos_base_url,
                 chunk_size_mb=int(self.emos_chunk_size_mb),
                 max_workers=int(self.emos_max_workers),
             )
@@ -877,6 +899,27 @@ class VideoFileHandler:
             return self._process_file_internal(file_path)
 
     def _process_file_internal(self, file_path, worker_id=0):
+        manager = self._runtime_manager
+        if manager is None:
+            return self._process_file_snapshot(file_path, worker_id)
+        import copy
+
+        with manager.lease() as generation:
+            task = copy.copy(generation.handler)
+            # 防止一项任务的规则字段锁污染同代其他线程。
+            task.renamer = copy.copy(generation.handler.renamer)
+            if task.renamer.rule_engine:
+                from ..manual_rule_engine import ManualRuleEngine
+
+                rule_config = generation.config.get("manual_rules", {})
+                task.renamer.rule_engine = ManualRuleEngine(
+                    rule_config.get("rules", []),
+                    enabled=rule_config.get("enabled", False),
+                )
+            task._file_downloader_map = dict(generation.handler._file_downloader_map)
+            return task._process_file_snapshot(file_path, worker_id)
+
+    def _process_file_snapshot(self, file_path, worker_id=0):
         """
         内部文件处理逻辑（包含元数据获取、API调用、上传）
         """
@@ -1295,6 +1338,7 @@ class VideoFileHandler:
 
                         uploader = RobustEmosVideoUploader(
                             self.emos_auth_token,
+                            base_url=self.emos_base_url,
                             chunk_size_mb=int(self.emos_chunk_size_mb),
                             telegram_config=self.telegram_config,
                             max_workers=int(self.emos_max_workers),
@@ -1596,8 +1640,8 @@ class VideoFileHandler:
             required_targets = self.upload_targets  # 现在是列表格式
 
             # 检查所有必需的上传是否都成功
-            all_success = all(
-                upload_results.get(target) is not None for target in required_targets
+            all_success = bool(required_targets) and all(
+                bool(upload_results.get(target)) for target in required_targets
             )
 
             if all_success:
@@ -1890,6 +1934,8 @@ class VideoFileHandler:
         """停止上传队列处理线程"""
         if self._queue_running:
             self._queue_running = False
+            with self._worker_condition:
+                self._worker_condition.notify_all()
             # 发送退出信号
             self._upload_queue.put(None)
             # 等待线程结束
@@ -2265,9 +2311,8 @@ class VideoFileHandler:
             if len(self._uploaded_files) > self._max_set_size:
                 old_size = len(self._uploaded_files)
                 # 保留最近的一半
-                self._uploaded_files = set(
-                    list(self._uploaded_files)[-(self._max_set_size // 2) :]
-                )
+                keep = set(list(self._uploaded_files)[-(self._max_set_size // 2) :])
+                self._uploaded_files.intersection_update(keep)
                 self.logger.info(
                     f"清理已上传文件记录: {old_size} -> {len(self._uploaded_files)}"
                 )
@@ -2276,7 +2321,8 @@ class VideoFileHandler:
             if len(self._failed_files) > self._max_set_size:
                 old_size = len(self._failed_files)
                 items = list(self._failed_files.items())[-(self._max_set_size // 2) :]
-                self._failed_files = dict(items)
+                self._failed_files.clear()
+                self._failed_files.update(items)
                 self.logger.info(
                     f"清理失败文件记录: {old_size} -> {len(self._failed_files)}"
                 )

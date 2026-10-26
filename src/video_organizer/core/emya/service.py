@@ -44,14 +44,14 @@ class EmyaService:
 
     _FOLDER_REGEX = re.compile(r'^(.+?) \((\d{4})\) \{tmdbid=(\d+)\}$')
 
-    def __init__(self, default_user_id: Optional[int] = None):
+    def __init__(self, default_user_id: Optional[int] = None, db=None):
         """
         初始化服务
 
         Args:
             default_user_id: 默认用户ID（用于上传者标识）
         """
-        self.db = get_db()
+        self.db = db if db is not None else get_db()
         self.default_user_id = default_user_id
 
     def _is_valid_date(self, date_str: str) -> bool:

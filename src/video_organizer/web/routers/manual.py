@@ -334,11 +334,7 @@ def _do_preview(raw_path: str, config: dict) -> PreviewResponse:
 
     set_file_id(raw_path)
     try:
-        renamer = VideoRenamer(
-            tmdb_api_key=tmdb_config.get("api_key", ""),
-            naming_rules=config.get("naming_rules", config.get("naming", {})),
-            config=config,
-        )
+        renamer = get_state_manager().make_task_renamer(config)
         if tmdb_client:
             renamer.tmdb_client = tmdb_client
 
@@ -429,11 +425,7 @@ def _do_validate(raw_path: str, config: dict, media_type: Optional[str] = None) 
 
     set_file_id(raw_path)
     try:
-        renamer = VideoRenamer(
-            tmdb_api_key=tmdb_config.get("api_key", ""),
-            naming_rules=config.get("naming_rules", config.get("naming", {})),
-            config=config,
-        )
+        renamer = get_state_manager().make_task_renamer(config)
         if tmdb_client:
             renamer.tmdb_client = tmdb_client
 

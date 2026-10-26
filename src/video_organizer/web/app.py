@@ -65,7 +65,7 @@ def create_app(
                 logger.info(f"已自动加载配置（默认路径）: {config_path}")
         except Exception as e:
             logger.warning(f"自动加载配置失败（部分功能可能受限）: {e}")
-    
+
     # 将 INI 配置导入数据库（首次运行时）
     config = state.get_config()
     if config:
@@ -73,7 +73,7 @@ def create_app(
             seed_from_ini(config)
         except Exception as e:
             logger.warning(f"导入配置到数据库失败: {e}")
-    
+
     app = FastAPI(
         title=title,
         version=version,
@@ -81,7 +81,7 @@ def create_app(
         docs_url="/api/docs",
         redoc_url="/api/redoc",
     )
-    
+
     # 添加 CORS 中间件
     app.add_middleware(
         CORSMiddleware,
@@ -90,7 +90,7 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
+
     # 注册路由（认证路由需要先注册，不受认证中间件影响）
     app.include_router(auth_router, prefix="/api/auth", tags=["认证管理"])
     app.include_router(apikeys_router, prefix="/api/apikeys", tags=["API Key 管理"])
@@ -102,10 +102,21 @@ def create_app(
     app.include_router(strm_router, tags=["STRM 代理"])
     app.include_router(organize_router, prefix="/api/organize", tags=["网盘整理"])
     app.include_router(recycle_router, prefix="/api/recycle", tags=["回收站清理"])
-    
+
+    # HTTP 组件租约覆盖流式响应，旧客户端不会在响应结束前关闭。
+    from .services.live_config import RuntimeLeaseMiddleware
+
+    if state._live_config is None or (
+        state._live_config.root is None and state._video_handler is not None
+    ):
+        from ..core.recycle_cleaner import get_cleaner
+
+        state.enable_live_config(config, state.get_config_path(), cleaner=get_cleaner())
+    app.add_middleware(RuntimeLeaseMiddleware)
+
     # 认证中间件（对 API 请求进行登录检查）
     app.middleware("http")(auth_middleware)
-    
+
     # 静态文件目录（兼容 PyInstaller）
     if getattr(sys, 'frozen', False):
         base_dir = Path(sys._MEIPASS) / "video_organizer" / "web"
@@ -114,7 +125,7 @@ def create_app(
     static_dir = base_dir / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    
+
     # 首页路由
     @app.get("/", response_class=HTMLResponse)
     async def index():
@@ -123,7 +134,7 @@ def create_app(
         if index_file.exists():
             return FileResponse(str(index_file))
         return HTMLResponse(content="<h1>Video Organizer 管理后台</h1><p>前端文件未找到</p>")
-    
+
     # 健康检查
     @app.get("/api/health")
     async def health_check():
@@ -133,21 +144,21 @@ def create_app(
             "status": "healthy",
             "system_running": state.is_system_running(),
         }
-    
+
     # 系统状态
     @app.get("/api/status")
     async def system_status():
         """获取系统整体状态"""
         state = get_state_manager()
         return state.get_system_status()
-    
+
     # 请求日志中间件
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
         logger.debug(f"请求: {request.method} {request.url}")
         response = await call_next(request)
         return response
-    
+
     logger.info(f"FastAPI 应用已创建: {title} v{version}")
     return app
 

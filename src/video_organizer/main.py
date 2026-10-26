@@ -749,6 +749,7 @@ def main() -> None:
 
             # 初始化回收站定时清理器（仅 Web 模式下也需要能手动/定时清理）
             recycle_cleaner = initialize_recycle_cleaner(config)
+            state.enable_live_config(config, config_path, cleaner=recycle_cleaner)
 
             # 启动 Web 服务（主线程运行）
             try:
@@ -788,6 +789,13 @@ def main() -> None:
         # 初始化回收站定时清理器（复用监控器已登录的云盘客户端）
         recycle_cleaner = initialize_recycle_cleaner(
             config, getattr(monitor, "event_handler", None)
+        )
+
+        state = get_state_manager()
+        state.set_video_handler(monitor.event_handler)
+        state.set_downloader_monitors(monitor.downloader_monitors)
+        state.enable_live_config(
+            config, config_path, monitor=monitor, cleaner=recycle_cleaner
         )
 
         # 启动 Web 服务（如果请求）
@@ -831,6 +839,7 @@ def main() -> None:
                         emya_db_config=config.get("emya_db", {}),
                     )
                     mt_client.start()
+                    get_state_manager()._live_config.current.tracker = mt_client
             except Exception as e:
                 logger.warning(f"初始化 Media Tracker 客户端失败: {e}")
 

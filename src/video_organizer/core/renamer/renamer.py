@@ -354,11 +354,19 @@ class VideoRenamer:
         config: Optional[Dict] = None,
     ):
         tmdb_config = (config or {}).get("tmdb", {}) if config else {}
-        self.tmdb_client = TMDBClient(
-            tmdb_api_key,
-            base_url=tmdb_config.get("base_url"),
-            rate_limit_per_sec=tmdb_config.get("rate_limit_per_sec"),
-        ) if tmdb_api_key else None
+        self.tmdb_client = (
+            TMDBClient(
+                tmdb_api_key,
+                base_url=tmdb_config.get("base_url"),
+                rate_limit_per_sec=(
+                    None
+                    if (config or {}).get("_runtime_preparing")
+                    else tmdb_config.get("rate_limit_per_sec")
+                ),
+            )
+            if tmdb_api_key
+            else None
+        )
         self.max_search_pages = tmdb_config.get("max_search_pages", 5) if tmdb_config else 5
         self.ai_service_url = ai_service_url
         self.watch_path = watch_path
@@ -394,8 +402,12 @@ class VideoRenamer:
 
             # 优先从 DB 读取（懒导入避免循环依赖）
             try:
-                from src.video_organizer.database.config_operations import get_llm_providers
-                providers = get_llm_providers()
+                if "_runtime_llm_providers" in (config or {}):
+                    providers = config["_runtime_llm_providers"]
+                else:
+                    from ...database.config_operations import get_llm_providers
+
+                    providers = get_llm_providers()
             except Exception:
                 providers = []
 
@@ -555,7 +567,7 @@ class VideoRenamer:
             if not hasattr(file_path, "name"):
                 logger.error(f"无效的file_path参数: {file_path}")
                 return {}
-            
+
             # 解码文件名（处理 URL 编码的中文文件名）
             decoded_filename = decode_filename(file_path.name)
             if decoded_filename != file_path.name:
@@ -702,7 +714,7 @@ class VideoRenamer:
                     logger.info(f"[DEBUG]  after guessit merge: release_group='{metadata.get('release_group')}', guessit_prefer={self._guessit_prefer}")
                     logger.debug(f"GuessIt 增强识别完成: show_name={metadata.get('show_name')}, "
                                 f"season={metadata.get('season')}, episode={metadata.get('episode')}")
-                    
+
                     # 再次应用规则：用于处理 show_name（如果规则只修改了 _processed_filename 但 show_name 还没被修改）
                     if self.rule_engine and self.rule_engine.enabled:
                         try:
@@ -1528,7 +1540,7 @@ class VideoRenamer:
 
                 # 接下来执行常规清理
                 show_name = metadata["show_name"]
-                
+
                 # 1.0 清理季号相关文本（如 "2nd Season", "-S2", "S2", "Season X" 等）
                 if metadata.get("season"):
                     season_num = metadata["season"]
@@ -1568,7 +1580,7 @@ class VideoRenamer:
                         flags=re.IGNORECASE,
                     )
                     show_name = show_name.strip()
-                
+
                 # 1. 移除首部的发布组方括号，如 [Dynamis One]
                 show_name = re.sub(r"^\[[^\]]+\]\s*", "", show_name)
                 # 1.1 移除中文方括号并保留内容（如 【我推的孩子】 -> 我推的孩子）
@@ -1719,7 +1731,7 @@ class VideoRenamer:
                                 # 移除整个匹配的后缀
                                 show_name = re.sub(pat, "", show_name, flags=re.IGNORECASE).strip()
                                 break
-                
+
 
                 metadata["show_name"] = show_name.strip()
                 show_name = show_name.strip().rstrip(".")
@@ -1888,7 +1900,7 @@ class VideoRenamer:
                         is_tv = True
             except (ValueError, TypeError):
                 is_tv = False
-        
+
         # 统一检查：如果已经识别为TV，需要验证season和episode是否合理
         if is_tv:
             if metadata.get("season") and metadata.get("episode"):
@@ -2153,7 +2165,7 @@ class VideoRenamer:
                                 has_chinese_after = True
                                 break
                         break
-                
+
                 if has_chinese_after:
                     # 如果后面还有中文，保留整个名称（如"人中之龍 Powered by 日本統一"）
                     pass
@@ -2967,10 +2979,10 @@ class VideoRenamer:
         tmdb_id = metadata.get("tmdb_id")
         media_type = metadata.get("media_type", "")
         year = metadata.get("year", "")
-        
+
         if not show_name or not tmdb_id:
             return
-        
+
         # 只保存基础信息，不保存集数等变化的信息（多个缓存键共用）
         cache_data = {}
         for key in ["show_name", "title", "year", "tmdb_id", "genres", "origin_country",
@@ -2986,13 +2998,13 @@ class VideoRenamer:
         if name_key and name_key not in self._tmdb_name_to_id:
             self._tmdb_name_to_id[name_key] = tmdb_id
             logger.debug(f"TMDB 缓存: 保存名称映射 {show_name} -> TMDB ID {tmdb_id}")
-        
+
         # 保存完整元数据缓存（含 media_type 防跨类型污染）
         cache_key = f"tmdb_{tmdb_id}_{media_type}"
         if cache_key not in self._tmdb_cache:
             self._tmdb_cache[cache_key] = cache_data
             logger.info(f"TMDB 缓存: 保存元数据 {show_name} (TMDB ID: {tmdb_id})")
-        
+
         # 同时保存名称键的缓存
         name_cache_key = f"{show_name}_{year}_{media_type}".lower().strip()
         if name_cache_key and name_cache_key not in self._tmdb_cache:
@@ -3131,14 +3143,14 @@ class VideoRenamer:
             # 记录入口目录年份：识别过程中 year 会被 TMDB 首播年份覆盖，
             # 反推季号必须用「目录年份」（某季的播出年份）而不是首播年份
             entry_year = year
-            
+
             # 构建缓存键：优先使用 tmdb_id，否则使用 show_name + year + media_type
             cache_key = None
             if existing_tmdb_id:
                 cache_key = f"tmdb_{existing_tmdb_id}_{media_type}"
             elif show_name:
                 cache_key = f"{show_name}_{year}_{media_type}".lower().strip()
-            
+
             # 检查缓存命中
             # 用 get 原子读取：contains + getitem 之间可能被其他线程的 LRU 淘汰打断
             # （原 dict 无淘汰不会出现，线程安全 LRU 下必须单次原子访问）
@@ -3171,7 +3183,7 @@ class VideoRenamer:
                     #   而被分到不同的季目录）
                     self._ensure_season(metadata, entry_year)
                     return metadata
-            
+
             # 检查是否已有 name -> tmdb_id 的映射（用于同一剧集不同集数，含 media_type 防污染）
             name_key = f"{show_name.lower().strip()}_{media_type}"
             cached_tmdb_id = (
@@ -3184,7 +3196,7 @@ class VideoRenamer:
                 # 使用缓存的 tmdb_id 直接获取详情
                 metadata["tmdb_id"] = cached_tmdb_id
                 existing_tmdb_id = cached_tmdb_id
-            
+
             logger.info(f"开始TMDB搜索: metadata={metadata}")
             # 保存原始的quality_tags和release_group，避免被覆盖
             original_quality_tags = metadata.get("quality_tags", "")
@@ -3197,7 +3209,7 @@ class VideoRenamer:
             if existing_tmdb_id:
                 logger.info(f"文件名中已包含TMDB ID: {existing_tmdb_id}，直接使用该ID获取元数据")
                 media_type_hint = metadata.get("media_type", metadata.get("type", ""))
-                
+
                 try:
                     tmdb_id_int = int(existing_tmdb_id)
                     if media_type_hint == "tv":
@@ -3223,7 +3235,7 @@ class VideoRenamer:
                             }
                             # 保存 genre_ids 用于判断动画类型
                             metadata["genre_ids"] = best_match.get("genre_ids", [])
-                            
+
                             # 跳过搜索，直接进入元数据丰富部分
                             # 使用专门的API获取更详细的信息，优先使用中文
                             # 先尝试获取中文详细信息
@@ -3231,7 +3243,7 @@ class VideoRenamer:
                                 details = self.tmdb_client.get_tv_details(tmdb_id_int, language="en-US")
                                 if details:
                                     logger.info("中文电视剧信息不完整，使用英文信息")
-                            
+
                             # 保存原始标题
                             original_name = metadata.get("show_name")
                             metadata["original_show_name"] = original_name
@@ -3250,17 +3262,17 @@ class VideoRenamer:
                             metadata["number_of_seasons"] = details.get("number_of_seasons", 0)
                             metadata["number_of_episodes"] = details.get("number_of_episodes", 0)
                             metadata["tmdb_id"] = best_match["id"]
-                            
+
                             # 提取年份
                             if details.get("first_air_date"):
                                 metadata["year"] = details["first_air_date"].split("-")[0]
                             elif "first_air_date" in best_match and best_match["first_air_date"]:
                                 metadata["year"] = best_match["first_air_date"].split("-")[0]
-                            
+
                             # 保存图片路径
                             metadata["poster_path"] = details.get("poster_path", "")
                             metadata["backdrop_path"] = details.get("backdrop_path", "")
-                            
+
                             # 获取演职人员信息
                             credits = self.tmdb_client.get_tv_credits(best_match["id"])
                             if credits:
@@ -3277,13 +3289,13 @@ class VideoRenamer:
                                     for crew in credits.get("crew", [])
                                     if crew.get("job") in ["Director", "Writer", "Creator"]
                                 ][:5]
-                            
+
                             # 获取网络信息
                             if "networks" in details:
                                 metadata["networks"] = [
                                     network["name"] for network in details["networks"]
                                 ]
-                            
+
                             # 恢复原始的quality_tags和release_group
                             metadata["quality_tags"] = original_quality_tags
                             metadata["release_group"] = original_release_group
@@ -3291,10 +3303,10 @@ class VideoRenamer:
                             # （本分支是 name_key/已有 tmdb_id 的快速路径，
                             #   不走主流程末尾的 season 兜底，漏则同季多集 season 不一致）
                             self._ensure_season(metadata, entry_year)
-                            
+
                             # 保存到缓存
                             self._save_to_tmdb_cache(metadata, search_alias=entry_show_name)
-                            
+
                             logger.info(f"使用TMDB ID成功丰富元数据: show_name={metadata.get('show_name')}, year={metadata.get('year')}")
                             return metadata
                     else:
@@ -3319,14 +3331,14 @@ class VideoRenamer:
                             }
                             # 保存 genre_ids 用于判断动画类型
                             metadata["genre_ids"] = best_match.get("genre_ids", [])
-                            
+
                             # 跳过搜索，直接进入元数据丰富部分
                             # 先尝试获取中文详细信息
                             if not details or not (details.get("title") or details.get("overview")):
                                 details = self.tmdb_client.get_movie_details(tmdb_id_int, language="en-US")
                                 if details:
                                     logger.info("中文电影信息不完整，使用英文信息")
-                            
+
                             # 保存原始标题
                             original_name = metadata.get("title")
                             metadata["original_show_name"] = original_name
@@ -3343,17 +3355,17 @@ class VideoRenamer:
                             metadata["runtime"] = details.get("runtime", 0)
                             metadata["status"] = details.get("status", "")
                             metadata["tmdb_id"] = best_match["id"]
-                            
+
                             # 提取年份
                             if details.get("release_date"):
                                 metadata["year"] = details["release_date"].split("-")[0]
                             elif "release_date" in best_match and best_match["release_date"]:
                                 metadata["year"] = best_match["release_date"].split("-")[0]
-                            
+
                             # 保存图片路径
                             metadata["poster_path"] = details.get("poster_path", "")
                             metadata["backdrop_path"] = details.get("backdrop_path", "")
-                            
+
                             # 获取演职人员信息
                             credits = self.tmdb_client.get_movie_credits(best_match["id"])
                             if credits:
@@ -3370,21 +3382,21 @@ class VideoRenamer:
                                     for crew in credits.get("crew", [])
                                     if crew.get("job") in ["Director", "Writer", "Creator"]
                                 ][:5]
-                            
+
                             # 恢复原始的quality_tags和release_group
                             metadata["quality_tags"] = original_quality_tags
                             metadata["release_group"] = original_release_group
                             # 与完整识别路径保持一致：有集数无季数时默认第 1 季
                             self._ensure_season(metadata, entry_year)
-                            
+
                             # 保存到缓存
                             self._save_to_tmdb_cache(metadata, search_alias=entry_show_name)
-                            
+
                             logger.info(f"使用TMDB ID成功丰富元数据: title={metadata.get('title')}, year={metadata.get('year')}")
                             return metadata
                 except Exception as e:
                     logger.warning(f"使用TMDB ID {existing_tmdb_id} 获取元数据失败: {e}，将使用搜索方式")
-            
+
             # 如果没有 tmdb_id 或获取失败，则使用搜索方式
             # 优先使用show_name搜索，否则使用title，确保搜索词存在
             search_term = metadata.get("show_name", metadata.get("title", ""))
@@ -4041,11 +4053,11 @@ class VideoRenamer:
                         llm_result = self._parse_filename_with_cache(
                             original_filename, llm_cache_key
                         )
-                        
+
                         if llm_result and llm_result.get("show_name"):
                             llm_show_name = llm_result["show_name"]
                             logger.info(f"LLM parse_filename识别结果: show_name='{llm_show_name}'")
-                            
+
                             # 根据 LLM 返回结果判断媒体类型
                             llm_media_type = None
                             # 优先使用 LLM 返回的 media_type
@@ -4056,14 +4068,14 @@ class VideoRenamer:
                             elif llm_result.get("episode") or llm_result.get("season"):
                                 llm_media_type = "tv"
                                 logger.debug(f"LLM 返回 episode/season，判断为电视剧")
-                            
+
                             # 集数/季数不由 LLM 覆盖：走到本分支说明「剧名」识别失败，
                             # 而集数/季数已由 GuessIt/正则从文件名解析（如 "剧名（2026）/01.mp4" → episode=1）。
                             # 更关键的是：后续集会命中缓存而不再进入本分支，
                             # 若在此处由 LLM 补上 season，会造成同目录文件季数不一致、路径被拆散
                             if llm_result.get("year"):
                                 metadata["year"] = llm_result["year"]
-                            
+
                             # 确定用于搜索的媒体类型
                             search_media_type = llm_media_type or media_type_hint
                             logger.debug(f"TMDB搜索媒体类型: {search_media_type} (llm={llm_media_type}, hint={media_type_hint})")
@@ -4072,7 +4084,7 @@ class VideoRenamer:
                             llm_search_year = llm_result.get("year") or search_year
                             if llm_result.get("year"):
                                 logger.debug(f"使用 LLM 返回的年份: {llm_result.get('year')}")
-                            
+
                             # 根据 LLM 返回的 show_name 重新判断搜索语言
                             llm_show_name_is_chinese = bool(re.search(r"[\u4e00-\u9fff]", llm_show_name))
                             llm_primary_language = "zh-CN" if llm_show_name_is_chinese else "en-US"
@@ -4355,7 +4367,7 @@ class VideoRenamer:
                     #     score = 500
                     #     logger.debug(f"标题 '{normalized_title}' 明显长于搜索词 '{normalized_search}'，降低得分")
                     # else:
-                        score = 1000
+                    score = 1000
                 # 4. 标题是搜索词的子集（在标准化后的字符串上）
                 elif (
                     normalized_title in normalized_search
@@ -4553,7 +4565,7 @@ class VideoRenamer:
                             search_episode,
                             language="zh-CN",
                         )
-                        
+
                         # 如果中文剧集信息不完整，尝试获取英文信息
                         if not episode_details or not episode_details.get("name"):
                             episode_details_en = self.tmdb_client.get_tv_episode_details(
@@ -4716,7 +4728,7 @@ class VideoRenamer:
 
             # 保存到缓存（供同一剧集的其他集数使用）
             self._save_to_tmdb_cache(metadata, search_alias=entry_show_name)
-            
+
             return metadata
         except Exception as e:
             logger.error(f"TMDB enrichment failed: {e}")

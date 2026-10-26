@@ -49,28 +49,40 @@ def _build_organizer(provider: str):
     config = _get_config()
     tmdb_api_key = config.get("tmdb", {}).get("api_key", "")
 
+    def configured(organizer):
+        organizer._renamer = get_state_manager().make_task_renamer(config)
+        return organizer
+
     if provider == "p123":
         p123_config = config.get("p123", {})
-        return P123Organizer(
-            token=p123_config.get("token", ""),
-            organize_source_id=int(p123_config.get("organize_source_id", 0) or 0),
-            organize_target_id=int(p123_config.get("organize_target_id", 0) or 0),
-            max_workers=int(p123_config.get("max_workers", 2)),
-            tmdb_api_key=tmdb_api_key,
-            username=p123_config.get("username", ""),
-            password=p123_config.get("password", ""),
+        return configured(
+            P123Organizer(
+                token=p123_config.get("token", ""),
+                organize_source_id=int(p123_config.get("organize_source_id", 0) or 0),
+                organize_target_id=int(p123_config.get("organize_target_id", 0) or 0),
+                max_workers=int(p123_config.get("max_workers", 2)),
+                tmdb_api_key=tmdb_api_key,
+                username=p123_config.get("username", ""),
+                password=p123_config.get("password", ""),
+            )
         )
     elif provider == "yun139":
         yun139_config = config.get("yun139", {})
-        return Yun139Organizer(
-            authorization=yun139_config.get("authorization", ""),
-            cloud_type=yun139_config.get("cloud_type", "personal_new"),
-            cloud_id=yun139_config.get("cloud_id", ""),
-            organize_source_id=str(yun139_config.get("organize_source_id", "") or ""),
-            organize_target_id=str(yun139_config.get("organize_target_id", "") or ""),
-            max_workers=int(yun139_config.get("max_workers", 2)),
-            tmdb_api_key=tmdb_api_key,
-            app_mode=bool(yun139_config.get("app_mode", False)),
+        return configured(
+            Yun139Organizer(
+                authorization=yun139_config.get("authorization", ""),
+                cloud_type=yun139_config.get("cloud_type", "personal_new"),
+                cloud_id=yun139_config.get("cloud_id", ""),
+                organize_source_id=str(
+                    yun139_config.get("organize_source_id", "") or ""
+                ),
+                organize_target_id=str(
+                    yun139_config.get("organize_target_id", "") or ""
+                ),
+                max_workers=int(yun139_config.get("max_workers", 2)),
+                tmdb_api_key=tmdb_api_key,
+                app_mode=bool(yun139_config.get("app_mode", False)),
+            )
         )
     raise HTTPException(status_code=400, detail=f"不支持的网盘类型: {provider}")
 
@@ -101,6 +113,11 @@ def _init_running(provider: str) -> Dict:
 
 
 def _run_organize(provider: str, source_id, target_id, dry_run: bool) -> None:
+    with get_state_manager().borrow_components():
+        return _run_organize_snapshot(provider, source_id, target_id, dry_run)
+
+
+def _run_organize_snapshot(provider: str, source_id, target_id, dry_run: bool) -> None:
     """后台线程：执行整理任务"""
     state = _init_running(provider)
     try:
@@ -249,6 +266,10 @@ async def organize_run(provider: str, req: RunRequest):
     # 后台线程执行（转换 source/target 为合适类型：p123 用 int，yun139 用 str）
     source_id_int: Union[str, int]
     target_id_int: Union[str, int]
+    def configured(organizer):
+        organizer._renamer = get_state_manager().make_task_renamer(config)
+        return organizer
+
     if provider == "p123":
         try:
             source_id_int = int(source_id)

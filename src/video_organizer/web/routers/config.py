@@ -5,6 +5,8 @@
 """
 
 import logging
+import threading
+from functools import wraps
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -48,6 +50,43 @@ class ConfigResponse(BaseModel):
     success: bool
     message: str
     config: Optional[Dict[str, Any]] = None
+    saved: bool = True
+    applied: bool = False
+    apply_error: Optional[str] = None
+    application: Optional[Dict[str, Any]] = None
+
+
+_config_mutation_lock = threading.RLock()
+
+
+def serialize_write(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _config_mutation_lock:
+            return function(*args, **kwargs)
+
+    return wrapped
+
+
+def _persist_apply(state, config):
+    from ...core.config_loader import load_config, update_config
+    from ...core.effective_config import normalize_config
+
+    try:
+        config = normalize_config(config)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    path = state.get_config_path()
+    if path:
+        update_config(config, path)
+        config = load_config(path)
+    result = state.apply_config(config, path)
+    return ConfigResponse(success=True, config=state.get_saved_config(), **result)
+
+
+def _apply_saved_llm():
+    state = get_state_manager()
+    return state.apply_config(state.get_saved_config(), state.get_config_path())
 
 
 # ===== DB Config Request Models =====
@@ -241,7 +280,8 @@ async def get_llm_providers():
 
 
 @router.post("/db/llm-providers", status_code=201)
-async def create_llm_provider(request: LlmProviderCreateRequest):
+@serialize_write
+def create_llm_provider(request: LlmProviderCreateRequest):
     try:
         with get_session_local()() as db:
             provider = LlmProvider(
@@ -257,13 +297,19 @@ async def create_llm_provider(request: LlmProviderCreateRequest):
             )
             db.add(provider)
             db.commit()
-            return {"success": True, "id": provider.id}
+            return {
+                "success": True,
+                "saved": True,
+                "id": provider.id,
+                **_apply_saved_llm(),
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建 LLM 提供商失败: {e}")
 
 
 @router.put("/db/llm-providers/{provider_id}")
-async def update_llm_provider(provider_id: int, request: LlmProviderCreateRequest):
+@serialize_write
+def update_llm_provider(provider_id: int, request: LlmProviderCreateRequest):
     try:
         with get_session_local()() as db:
             p = db.query(LlmProvider).filter(LlmProvider.id == provider_id).first()
@@ -280,7 +326,7 @@ async def update_llm_provider(provider_id: int, request: LlmProviderCreateReques
             p.max_retries = request.max_retries
             p.updated_at = datetime.now()
             db.commit()
-            return {"success": True}
+            return {"success": True, "saved": True, **_apply_saved_llm()}
     except HTTPException:
         raise
     except Exception as e:
@@ -288,7 +334,8 @@ async def update_llm_provider(provider_id: int, request: LlmProviderCreateReques
 
 
 @router.delete("/db/llm-providers/{provider_id}")
-async def delete_llm_provider(provider_id: int):
+@serialize_write
+def delete_llm_provider(provider_id: int):
     try:
         with get_session_local()() as db:
             p = db.query(LlmProvider).filter(LlmProvider.id == provider_id).first()
@@ -296,7 +343,7 @@ async def delete_llm_provider(provider_id: int):
                 raise HTTPException(status_code=404, detail="提供商不存在")
             db.delete(p)
             db.commit()
-            return {"success": True}
+            return {"success": True, "saved": True, **_apply_saved_llm()}
     except HTTPException:
         raise
     except Exception as e:
@@ -344,11 +391,19 @@ router.include_router(db_router)
 # ===== INI Config Endpoints =====
 
 
+@router.get("/application-status")
+def config_application_status():
+    return {
+        "success": True,
+        "application": get_state_manager().get_config_application_status(),
+    }
+
+
 @router.get("", response_model=ConfigResponse)
 async def get_config():
     try:
         state = get_state_manager()
-        config = state.get_config()
+        config = state.get_saved_config()
         return ConfigResponse(success=True, message="获取配置成功", config=config)
     except Exception as e:
         logger.error(f"获取配置失败: {e}")
@@ -359,7 +414,7 @@ async def get_config():
 async def get_config_section(section: str):
     try:
         state = get_state_manager()
-        config = state.get_config()
+        config = state.get_saved_config()
         if section not in config:
             raise HTTPException(status_code=404, detail=f"配置节 '{section}' 不存在")
         return ConfigResponse(
@@ -374,94 +429,60 @@ async def get_config_section(section: str):
 
 
 @router.put("/item", response_model=ConfigResponse)
-async def update_config_item(request: ConfigUpdateRequest):
-    try:
-        state = get_state_manager()
-        config = state.get_config()
-        config_path = state.get_config_path()
-        if request.section not in config:
-            raise HTTPException(status_code=404, detail=f"配置节 '{request.section}' 不存在")
-        config[request.section][request.key] = request.value
-        if config_path:
-            from ...core.config_loader import update_config
-            update_config(config, config_path)
-        return ConfigResponse(
-            success=True, message=f"配置项 '{request.section}.{request.key}' 已更新", config=config,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"更新配置失败: {e}")
-        raise HTTPException(status_code=500, detail=f"更新配置失败: {e}")
+@serialize_write
+def update_config_item(request: ConfigUpdateRequest):
+    state = get_state_manager()
+    config = state.get_saved_config()
+    if request.section not in config:
+        raise HTTPException(status_code=404, detail="配置节不存在")
+    config[request.section][request.key] = request.value
+    return _persist_apply(state, config)
 
 
 @router.put("/section", response_model=ConfigResponse)
-async def update_config_section(request: ConfigSectionUpdateRequest):
-    try:
-        state = get_state_manager()
-        config = state.get_config()
-        config_path = state.get_config_path()
-        if request.section == "release_group_mapping" and any(
-            value not in ("anime", "drama", "movie") for value in request.values.values()
-        ):
-            raise HTTPException(status_code=422, detail="字幕组类型必须为 anime、drama 或 movie")
-        if request.replace or request.section not in config:
-            config[request.section] = {}
-        config[request.section].update(request.values)
-        if config_path:
-            from ...core.config_loader import update_config, load_config
-            update_config(config, config_path)
-            new_config = load_config(config_path)
-            state.set_config(new_config, config_path)
-        else:
-            state.set_config(config, config_path)
-        return ConfigResponse(success=True, message=f"配置节 '{request.section}' 已更新", config=config)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"更新配置节失败: {e}")
-        raise HTTPException(status_code=500, detail=f"更新配置节失败: {e}")
+@serialize_write
+def update_config_section(request: ConfigSectionUpdateRequest):
+    state = get_state_manager()
+    config = state.get_saved_config()
+    if request.section == "release_group_mapping" and any(
+        value not in ("anime", "drama", "movie") for value in request.values.values()
+    ):
+        raise HTTPException(
+            status_code=422, detail="字幕组类型必须为 anime、drama 或 movie"
+        )
+    if request.replace or request.section not in config:
+        config[request.section] = {}
+    config[request.section].update(request.values)
+    return _persist_apply(state, config)
 
 
 @router.delete("/section/{section}", response_model=ConfigResponse)
-async def delete_config_section(section: str):
-    try:
-        state = get_state_manager()
-        config = state.get_config()
-        config_path = state.get_config_path()
-        if section not in config:
-            raise HTTPException(status_code=404, detail=f"配置节 '{section}' 不存在")
-        del config[section]
-        if config_path:
-            from ...core.config_loader import update_config, load_config
-            update_config(config, config_path)
-            new_config = load_config(config_path)
-            state.set_config(new_config, config_path)
-        else:
-            state.set_config(config, config_path)
-        return ConfigResponse(success=True, message=f"配置节 '{section}' 已删除", config=config)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"删除配置节失败: {e}")
-        raise HTTPException(status_code=500, detail=f"删除配置节失败: {e}")
+@serialize_write
+def delete_config_section(section: str):
+    state = get_state_manager()
+    config = state.get_saved_config()
+    if section not in config:
+        raise HTTPException(status_code=404, detail="配置节不存在")
+    del config[section]
+    return _persist_apply(state, config)
+
 
 @router.post("/reload", response_model=ConfigResponse)
-async def reload_config():
+@serialize_write
+def reload_config():
+    state = get_state_manager()
+    path = state.get_config_path()
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="配置文件不存在")
+    from ...core.config_loader import load_config
+    from ...core.effective_config import normalize_config
+
     try:
-        state = get_state_manager()
-        config_path = state.get_config_path()
-        if not config_path or not config_path.exists():
-            raise HTTPException(status_code=404, detail="配置文件不存在")
-        from ...core.config_loader import load_config
-        new_config = load_config(config_path)
-        state.set_config(new_config, config_path)
-        return ConfigResponse(success=True, message="配置已重新加载", config=new_config)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"重新加载配置失败: {e}")
-        raise HTTPException(status_code=500, detail=f"重新加载配置失败: {e}")
+        config = normalize_config(load_config(path))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="配置文件校验失败") from exc
+    result = state.apply_config(config, path)
+    return ConfigResponse(success=True, config=state.get_saved_config(), **result)
 
 
 @router.get("/schema/description")

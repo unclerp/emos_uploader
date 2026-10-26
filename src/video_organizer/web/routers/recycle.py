@@ -54,6 +54,11 @@ def _attach_existing_clients(cleaner: RecycleCleaner, config: Dict[str, Any]) ->
 
 def _get_cleaner() -> RecycleCleaner:
     """获取（或按需创建）全局清理器，并同步最新配置"""
+    from ..services.live_config import borrowed_generation
+
+    generation = borrowed_generation.get()
+    if generation and generation.cleaner:
+        return generation.cleaner
     config = _get_config()
     cleaner = get_cleaner()
     if cleaner is None:

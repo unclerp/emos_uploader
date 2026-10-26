@@ -299,13 +299,21 @@ class RecycleCleaner:
     # ----- 线程主循环 -----
 
     def _loop(self) -> None:
+        activation = getattr(self, "_activation", None)
+        while activation is not None and not activation.wait(0.1):
+            if self._stop.is_set():
+                return
+        if self._stop.is_set():
+            return
         now = datetime.now()
 
-        if self.run_on_start:
+        if self.run_on_start and not getattr(self, "_hot_reloaded", False):
             logger.info("回收站清理：run_on_start 已开启，启动后立即执行一次")
             self.clean_all(reason="on_start")
-        elif self.catch_up_on_start and has_missed_slot(
-            now, self.slots, self.last_run_at
+        elif (
+            self.catch_up_on_start
+            and not getattr(self, "_hot_reloaded", False)
+            and has_missed_slot(now, self.slots, self.last_run_at)
         ):
             logger.info("回收站清理：今天的时间点已过且未执行，补跑一次")
             self.clean_all(reason="catch_up")

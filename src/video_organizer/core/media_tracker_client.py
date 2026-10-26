@@ -46,6 +46,8 @@ class MediaTrackerClient:
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._event_loop = None
+        self._websocket = None
 
         # 异步队列处理：避免阻塞 WebSocket 事件循环
         self._processing_queue: Optional[asyncio.Queue] = None
@@ -77,6 +79,8 @@ class MediaTrackerClient:
 
     def stop(self):
         self._stop_event.set()
+        if self._event_loop and self._event_loop.is_running() and self._websocket:
+            asyncio.run_coroutine_threadsafe(self._websocket.close(), self._event_loop)
         logger.info("Media Tracker \u5ba2\u6237\u7aef\u5df2\u505c\u6b62")
 
     def _run_loop(self):
@@ -85,6 +89,11 @@ class MediaTrackerClient:
     async def _ws_loop(self):
         """WebSocket \u4e3b\u5faa\u73af + \u542f\u52a8\u5e76\u53d1\u5904\u7406\u961f\u5217"""
         # \u521b\u5efa\u5904\u7406\u961f\u5217\uff08\u5e26\u5bb9\u91cf\u9650\u5236\uff09
+        while hasattr(self, "_activation") and not self._activation.is_set():
+            if self._stop_event.is_set():
+                return
+            await asyncio.sleep(0.1)
+        self._event_loop = asyncio.get_running_loop()
         self._processing_queue = asyncio.Queue(maxsize=self._max_queue_size)
 
         # \u542f\u52a8\u5e76\u53d1\u5de5\u4f5c\u534f\u7a0b
@@ -113,6 +122,7 @@ class MediaTrackerClient:
         while not self._stop_event.is_set():
             try:
                 async with websockets.connect(self.ws_url) as ws:
+                    self._websocket = ws
                     logger.info("\u5df2\u8fde\u63a5\u5230 Media Tracker WebSocket")
                     async for message in ws:
                         if self._stop_event.is_set():
