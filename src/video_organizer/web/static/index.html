@@ -269,7 +269,7 @@
                     <div class="page-header-actions">
                         <div class="config-search" id="configSearchWrapper">
                             <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                            <input type="text" id="configSearchInput" placeholder="搜索参数...">
+                            <input type="search" id="configSearchInput" name="config_field_filter" autocomplete="off" data-lpignore="true" data-1p-ignore="true" placeholder="搜索参数...">
                             <kbd class="search-hint">⌘K</kbd>
                         </div>
                         <button class="btn btn-console" id="reloadConfigBtn">
@@ -347,7 +347,7 @@
                             </a>
                             <a class="cnav-item" data-section="emos">
                                 <span class="cnav-led"></span>
-                                <span class="cnav-label">Emby 云盘</span>
+                                <span class="cnav-label">Emos 云盘</span>
                                 <span class="cnav-badge">—</span>
                             </a>
                         </div>
@@ -397,6 +397,10 @@
                     </nav>
                     <div class="config-content">
                         <p id="configApplicationStatus" role="status" aria-live="polite">正在读取配置应用状态…</p>
+                        <div id="configSearchEmpty" hidden>
+                            <p>没有匹配的配置项，请清除筛选后查看。</p>
+                            <button type="button" class="btn btn-secondary" id="configSearchClear">清除筛选</button>
+                        </div>
                         <div id="config-editor"></div>
                     </div>
                 </div>
@@ -649,6 +653,6 @@
 
     <script src="/static/api.js?v=667e445e7a5c"></script>
     <script src="/static/ui.js?v=506cac969496"></script>
-    <script src="/static/app.js?v=188e299c56cd"></script>
+    <script src="/static/app.js?v=b0b3d56c7cab"></script>
 </body>
 </html>

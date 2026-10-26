@@ -521,43 +521,84 @@ async function loadDbConfigs() {
 async function loadConfig() {
     try {
         state.config = await loadConfigFromApi();
-        await loadDbConfigs();
+        state.config.release_group_mapping ||= {};
         refreshConfigApplicationStatus();
-        renderConfigEditor();
         setupConfigNav();
         setupConfigSearch();
+        updateConfigBadges();
+        renderConfigEditor();
+        try {
+            await loadDbConfigs();
+            updateConfigBadges();
+            if (_configCurrentSection === '__llm_providers') renderConfigEditor();
+        } catch (e) {
+            if (!e.message.includes('登录已过期')) showToast(`LLM 配置加载失败：${e.message}`, 'error');
+        }
     } catch (e) { if (!e.message.includes('登录已过期')) console.error('加载配置失败:', e); }
+}
+
+function configEntries(section) {
+    return Object.entries(state.config?.[section] || {}).filter(([key]) =>
+        section !== 'manual_rules' || !key.startsWith('rule') || key === 'rules');
+}
+
+function updateConfigBadges() {
+    document.querySelectorAll('.cnav-item').forEach(item => {
+        const section = item.dataset.section;
+        let badge = item.querySelector('.cnav-badge');
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'cnav-badge';
+            item.appendChild(badge);
+        }
+        badge.textContent = section === '__llm_providers' ? _dbLlmProviders.length :
+            section === 'release_group_mapping' ? 1 : configEntries(section).length;
+    });
 }
 
 function setupConfigNav() {
     document.querySelectorAll('.cnav-item').forEach(item => {
-        item.addEventListener('click', () => {
+        item.onclick = () => {
             document.querySelectorAll('.cnav-item').forEach(n => n.classList.remove('active'));
             item.classList.add('active');
             _configCurrentSection = item.dataset.section;
+            const search = document.getElementById('configSearchInput');
+            if (search) search.value = '';
             renderConfigEditor();
-        });
+        };
     });
 }
 
 function setupConfigSearch() {
     const input = document.getElementById('configSearchInput');
     if (!input) return;
-    input.addEventListener('input', () => {
-        const q = input.value.toLowerCase().trim();
-        if (!q) {
-            document.querySelectorAll('.config-field').forEach(f => f.style.display = '');
-            return;
-        }
-        document.querySelectorAll('.config-field').forEach(f => {
-            const label = f.querySelector('.config-field-label')?.textContent?.toLowerCase() || '';
-            f.style.display = label.includes(q) ? '' : 'none';
-        });
+    if (!input.dataset.configSearchReady) {
+        input.value = '';
+        input.dataset.configSearchReady = 'true';
+    }
+    input.oninput = applyConfigSearch;
+    const clear = document.getElementById('configSearchClear');
+    if (clear) clear.onclick = () => { input.value = ''; applyConfigSearch(); input.focus(); };
+}
+
+function applyConfigSearch() {
+    const query = document.getElementById('configSearchInput')?.value.toLowerCase().trim() || '';
+    const fields = document.querySelectorAll('#config-editor .config-field');
+    let visible = 0;
+    fields.forEach(field => {
+        const label = field.querySelector('.config-field-label')?.textContent?.toLowerCase() || '';
+        const matches = !query || label.includes(query);
+        field.style.display = matches ? '' : 'none';
+        if (matches) visible++;
     });
+    const empty = document.getElementById('configSearchEmpty');
+    if (empty) empty.hidden = !query || !fields.length || visible > 0;
 }
 
 function renderConfigEditor() {
     const section = _configCurrentSection;
+    const empty = document.getElementById('configSearchEmpty');
+    if (empty) empty.hidden = true;
     if (section === '__llm_providers') {
         renderLlmProviders();
         return;
@@ -576,13 +617,13 @@ function renderIniConfigEditor(section) {
     if (section === 'release_group_mapping') {
         html += `<div class="config-field"><div class="config-field-label">字幕组映射（JSON 对象）</div><textarea name="release_group_mapping.__entries" rows="12" spellcheck="false">${escapeHtml(JSON.stringify(config[section], null, 2))}</textarea><small>可添加或删除字幕组，类型为 anime、drama 或 movie。</small></div>`;
     } else {
-        for (const [k, v] of Object.entries(config[section])) {
-            if (section === 'manual_rules' && k.startsWith('rule') && k !== 'rules') continue;
+        for (const [k, v] of configEntries(section)) {
             html += renderConfigField(section, k, v);
         }
     }
     html += `</div></div>`;
     el.configEditor.innerHTML = html;
+    applyConfigSearch();
 
     document.querySelectorAll('#config-editor .toggle-track').forEach(track => {
         track.addEventListener('click', () => {
@@ -602,7 +643,7 @@ function getSectionLabel(section) {
         'processing': '处理配置', 'logging': '日志配置',
         'p123': '123云盘', 'cloud189': '天翼云盘', 'yun139': '139云盘',
         'recycle_clean': '回收站清理',
-        'emos': 'Emby 云盘', 'telegram': 'Telegram', 'guessit': 'GuessIt 解析',
+        'emos': 'Emos 云盘', 'telegram': 'Telegram', 'guessit': 'GuessIt 解析',
         'emya_db': 'Emby 数据库', 'downloaders': '下载器列表',
         'manual_rules': '手动规则（INI）', 'release_group_mapping': '字幕组映射（INI）',
         'llm_fallback': 'LLM 兜底识别', 'llm_provider_1': 'LLM 提供商 1',
