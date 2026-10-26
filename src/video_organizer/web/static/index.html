@@ -267,11 +267,11 @@
                         <h1 class="page-title">配置管理</h1>
                     </div>
                     <div class="page-header-actions">
-                        <div class="config-search" id="configSearchWrapper">
+                        <form class="config-search" id="configSearchWrapper" role="search" autocomplete="off">
                             <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                             <input type="search" id="configSearchInput" name="config_field_filter" autocomplete="off" data-lpignore="true" data-1p-ignore="true" placeholder="搜索参数...">
                             <kbd class="search-hint">⌘K</kbd>
-                        </div>
+                        </form>
                         <button class="btn btn-console" id="reloadConfigBtn">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
                             <span>重新加载</span>
@@ -401,7 +401,7 @@
                             <p>没有匹配的配置项，请清除筛选后查看。</p>
                             <button type="button" class="btn btn-secondary" id="configSearchClear">清除筛选</button>
                         </div>
-                        <div id="config-editor"></div>
+                        <form id="config-editor" autocomplete="off"></form>
                     </div>
                 </div>
             </div>
@@ -653,6 +653,6 @@
 
     <script src="/static/api.js?v=667e445e7a5c"></script>
     <script src="/static/ui.js?v=506cac969496"></script>
-    <script src="/static/app.js?v=b0b3d56c7cab"></script>
+    <script src="/static/app.js?v=063d869a1efc"></script>
 </body>
 </html>

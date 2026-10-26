@@ -572,6 +572,9 @@ function setupConfigNav() {
 function setupConfigSearch() {
     const input = document.getElementById('configSearchInput');
     if (!input) return;
+    // 搜索与云盘凭据使用独立表单，阻止密码管理器跨区域识别登录信息。
+    if (input.form) input.form.onsubmit = event => event.preventDefault();
+    el.configEditor.onsubmit = event => event.preventDefault();
     if (!input.dataset.configSearchReady) {
         input.value = '';
         input.dataset.configSearchReady = 'true';
@@ -674,9 +677,9 @@ function renderConfigField(section, key, value) {
     } else if (typeof value === 'object' && value !== null) {
         inputHtml = `<textarea id="${inputId}" name="${inputName}">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
     } else if (isSecret) {
-        inputHtml = `<input type="password" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" spellcheck="false">`;
+        inputHtml = `<input type="password" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" spellcheck="false">`;
     } else {
-        inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" spellcheck="false">`;
+        inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" autocomplete="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false">`;
     }
 
     return `<div class="config-field">
@@ -700,7 +703,7 @@ function renderLlmProviders() {
             html += `<tr>
                 <td><input class="lp-name" data-id="${p.id}" value="${escapeHtml(p.name)}" style="width:85px"></td>
                 <td><input class="lp-url" data-id="${p.id}" value="${escapeHtml(p.api_url)}" style="font-family:monospace"></td>
-                <td><input class="lp-apikey" data-id="${p.id}" value="" placeholder="${keyPlaceholder}" type="password"></td>
+                <td><input class="lp-apikey" data-id="${p.id}" value="" placeholder="${keyPlaceholder}" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true"></td>
                 <td><input class="lp-model" data-id="${p.id}" value="${escapeHtml(p.model || '')}" style="width:85px"></td>
                 <td><input class="lp-weight" data-id="${p.id}" value="${p.weight}" type="number" min="0"></td>
                 <td><input class="lp-timeout" data-id="${p.id}" value="${p.timeout}" type="number" min="1"></td>
@@ -716,7 +719,7 @@ function renderLlmProviders() {
     html += `<div class="add-row-bar">
         <input type="text" id="newLpName" placeholder="名称..." style="width:90px">
         <input type="text" id="newLpUrl" placeholder="API URL..." style="font-family:monospace">
-        <input type="password" id="newLpApiKey" placeholder="API Key...">
+        <input type="password" id="newLpApiKey" placeholder="API Key..." autocomplete="new-password" data-lpignore="true" data-1p-ignore="true">
         <input type="text" id="newLpModel" placeholder="模型..." style="width:90px">
         <button class="add-btn" onclick="addLlmProvider()">+ 添加</button>
     </div></div>`;
