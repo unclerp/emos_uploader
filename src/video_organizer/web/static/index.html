@@ -450,6 +450,21 @@
                             <button class="btn btn-secondary" id="browseFileBtn">浏览...</button>
                         </div>
                     </div>
+                    <div class="form-group" style="display:flex;gap:12px;flex-wrap:wrap">
+                        <div>
+                            <label class="form-label" for="manualTmdbId">指定 TMDB 编号（可选）</label>
+                            <input type="number" min="1" step="1" class="form-input" id="manualTmdbId" autocomplete="off" placeholder="留空则自动识别">
+                        </div>
+                        <div>
+                            <label class="form-label" for="manualTmdbType">条目类型</label>
+                            <select class="form-select" id="manualTmdbType">
+                                <option value="">请选择类型</option>
+                                <option value="movie">电影</option>
+                                <option value="tv">电视剧 / 动漫剧集</option>
+                            </select>
+                        </div>
+                        <small style="width:100%;color:var(--text-muted)">指定后用于预览、刮削验证和本次选中的全部文件；季号、集号仍从各文件解析。不同作品请分开处理。</small>
+                    </div>
                     <div style="display:flex;gap:12px;margin-bottom:12px">
                         <button class="btn btn-secondary" id="addToFileListBtn">添加到列表</button>
                         <button class="btn btn-secondary" id="scanDirBtn">扫描目录</button>
@@ -651,8 +666,8 @@
         </div>
     </div>
 
-    <script src="/static/api.js?v=667e445e7a5c"></script>
+    <script src="/static/api.js?v=d8db547a3cc1"></script>
     <script src="/static/ui.js?v=506cac969496"></script>
-    <script src="/static/app.js?v=063d869a1efc"></script>
+    <script src="/static/app.js?v=ae343b898293"></script>
 </body>
 </html>

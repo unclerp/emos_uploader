@@ -1061,12 +1061,22 @@ function renderFileList() {
     });
 }
 
+function getManualTmdbSelection() {
+    const raw = document.getElementById('manualTmdbId').value.trim();
+    if (!raw) return {};
+    const id = Number(raw);
+    const mediaType = document.getElementById('manualTmdbType').value;
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(id) || id <= 0) throw new Error('请输入有效的 TMDB 正整数编号');
+    if (!['movie', 'tv'].includes(mediaType)) throw new Error('指定 TMDB 编号时，请选择电影或电视剧');
+    return { tmdb_id: id, media_type: mediaType };
+}
+
 async function previewFile() {
     const filePath = el.manualFilePath.value.trim();
     if (!filePath) { showToast('请输入文件路径', 'warning'); return; }
     setButtonLoading(el.previewFileBtn, true);
     try {
-        const result = await previewFileViaApi(filePath);
+        const result = await previewFileViaApi(filePath, getManualTmdbSelection());
         if (result.success) {
             el.previewResult.style.display = 'block';
             el.previewContent.innerHTML = `
@@ -1092,7 +1102,7 @@ async function validateScrape() {
     setButtonLoading(el.validateScrapeBtn, true);
     el.validateResult.style.display = 'none';
     try {
-        const result = await validateScrapeViaApi(filePath);
+        const result = await validateScrapeViaApi(filePath, getManualTmdbSelection());
         el.validateResult.style.display = 'block';
         if (result.success) {
             const icon = result.tmdb_matched ? '✅' : '❌';
@@ -1184,7 +1194,7 @@ async function processSelectedFiles() {
     }
     setButtonLoading(el.processSelectedBtn, true);
     try {
-        const result = await processBatchViaApi(files);
+        const result = await processBatchViaApi(files, getManualTmdbSelection());
         showToast(result.message, 'success');
         if (result.success) {
             state.selectedFiles = [];

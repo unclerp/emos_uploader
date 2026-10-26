@@ -547,6 +547,83 @@ class VideoRenamer:
         # 现在不需要单独恢复，因为所有合并都走 _merge_metadata
         pass
 
+    def extract_metadata_with_tmdb(
+        self, file_path, tmdb_id: int, media_type: str
+    ) -> Dict:
+        """手动指定条目：只查询该 ID，失败时禁止回退到自动搜索。"""
+        import copy
+
+        if media_type not in ("tv", "movie") or int(tmdb_id) <= 0:
+            raise ValueError("请填写有效的 TMDB 编号并选择电影或电视剧")
+        if not self.tmdb_client:
+            raise ValueError("TMDB 客户端未配置，无法验证指定编号")
+        parser = copy.copy(self)
+        parser.tmdb_client = None
+        metadata = parser.extract_metadata(file_path, media_type_hint=media_type)
+        getter = (
+            self.tmdb_client.get_tv_details
+            if media_type == "tv"
+            else self.tmdb_client.get_movie_details
+        )
+        details = getter(int(tmdb_id))
+        title = (details or {}).get("name" if media_type == "tv" else "title")
+        if not title or str(details.get("id")) != str(tmdb_id):
+            raise ValueError("无法获取指定的 TMDB 条目，请检查编号、类型及网络连接")
+        entry_year = metadata.get("year")
+        metadata.update(
+            {
+                "tmdb_id": int(tmdb_id),
+                "media_type": media_type,
+                "title": title,
+                "show_name": title,
+                "original_title": details.get(
+                    "original_title", details.get("original_name", "")
+                ),
+                "overview": details.get("overview", ""),
+                "genres": [g["name"] for g in details.get("genres", [])],
+                "genre_ids": [g["id"] for g in details.get("genres", [])],
+                "origin_country": details.get("origin_country", []),
+                "original_language": details.get("original_language", ""),
+                "poster_path": details.get("poster_path", ""),
+                "backdrop_path": details.get("backdrop_path", ""),
+                "rating": details.get("vote_average", 0),
+                "year": (
+                    details.get(
+                        "first_air_date" if media_type == "tv" else "release_date"
+                    )
+                    or ""
+                )[:4],
+                "_manual_tmdb": True,
+            }
+        )
+        if media_type == "movie":
+            for key in (
+                "season",
+                "episode",
+                "episode_title",
+                "season_name",
+                "season_episode",
+            ):
+                metadata.pop(key, None)
+        else:
+            self._ensure_season(metadata, entry_year)
+            if (
+                metadata.get("season") is not None
+                and metadata.get("episode") is not None
+            ):
+                episode = self.tmdb_client.get_tv_episode_details(
+                    int(tmdb_id), int(metadata["season"]), int(metadata["episode"])
+                )
+                metadata["episode_title"] = (episode or {}).get("name", "")
+        for key in ("base_category", "sub_category", "category_path"):
+            metadata.pop(key, None)
+        category = self._determine_category(metadata)
+        metadata["category_path"] = category
+        parts = category.split("/")
+        metadata["base_category"] = parts[0]
+        metadata["sub_category"] = parts[1] if len(parts) > 1 else ""
+        return metadata
+
     def extract_metadata(
         self, file_path: Union[str, Path], media_type_hint: Optional[str] = None
     ) -> Dict:

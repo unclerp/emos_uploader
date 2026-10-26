@@ -657,7 +657,13 @@ class VideoFileHandler:
             try:
                 # print(f"DEBUG: 工作线程 #{worker_id} 等待任务...")
                 # 从队列中获取文件路径，超时1秒
-                file_path = self._upload_queue.get(timeout=1)
+                queued_item = self._upload_queue.get(timeout=1)
+                tmdb_override = (
+                    queued_item[1] if isinstance(queued_item, tuple) else None
+                )
+                file_path = (
+                    queued_item[0] if isinstance(queued_item, tuple) else queued_item
+                )
                 if file_path is None:  # 退出信号
                     self._upload_queue.task_done()
                     print(f"DEBUG: 工作线程 #{worker_id} 收到退出信号")
@@ -665,7 +671,7 @@ class VideoFileHandler:
 
                 if worker_id > self.max_upload_workers:
                     # 缩容时已阻塞在 get() 的线程不能再开始新任务。
-                    self._upload_queue.put(file_path)
+                    self._upload_queue.put(queued_item)
                     self._upload_queue.task_done()
                     continue
 
@@ -683,7 +689,9 @@ class VideoFileHandler:
                 console_log(f"{'='*80}")
 
                 try:
-                    self._process_file_internal(file_path, worker_id)
+                    self._process_file_internal(
+                        file_path, worker_id, tmdb_override=tmdb_override
+                    )
                 except Exception as e:
                     self.logger.error(
                         f"工作线程 #{worker_id} 处理文件失败: {file_path}, 错误: {e}"
@@ -898,14 +906,18 @@ class VideoFileHandler:
             # 同步直接处理
             return self._process_file_internal(file_path)
 
-    def _process_file_internal(self, file_path, worker_id=0):
+    def _process_file_internal(self, file_path, worker_id=0, tmdb_override=None):
         manager = self._runtime_manager
-        if manager is None:
-            return self._process_file_snapshot(file_path, worker_id)
         import copy
+
+        if manager is None:
+            task = copy.copy(self)
+            task._manual_tmdb_override = tmdb_override
+            return task._process_file_snapshot(file_path, worker_id)
 
         with manager.lease() as generation:
             task = copy.copy(generation.handler)
+            task._manual_tmdb_override = tmdb_override
             # 防止一项任务的规则字段锁污染同代其他线程。
             task.renamer = copy.copy(generation.handler.renamer)
             if task.renamer.rule_engine:
@@ -933,7 +945,12 @@ class VideoFileHandler:
 
             # 使用 VideoRenamer 提取元数据 (包含 Regex 解析和 TMDB 搜索)
             # 注意: 这里使用 extract_metadata 会自动调用 _enrich_with_tmdb
-            metadata = self.renamer.extract_metadata(file_path)
+            override = getattr(self, "_manual_tmdb_override", None)
+            metadata = (
+                self.renamer.extract_metadata_with_tmdb(file_path, **override)
+                if override
+                else self.renamer.extract_metadata(file_path)
+            )
 
             # 打印综合识别结果（类似 --comprehensive 模式）
             console_log(f"✓ [线程#{worker_id}] 本地识别完成")
@@ -1274,7 +1291,9 @@ class VideoFileHandler:
             )
 
             # 如果有父监控器，可以将文件添加到重试队列
-            if self._parent_monitor:
+            if self._parent_monitor and not getattr(
+                self, "_manual_tmdb_override", None
+            ):
                 self.logger.info(f"将文件添加到重试队列: {file_path}")
                 self._parent_monitor._retry_files.add(file_path)
         finally:
@@ -1863,7 +1882,9 @@ class VideoFileHandler:
                 },
             )
 
-    def force_process_file(self, file_path: str) -> bool:
+    def force_process_file(
+        self, file_path: str, tmdb_override: Optional[Dict] = None
+    ) -> bool:
         """
         强制处理文件
 
@@ -1918,7 +1939,9 @@ class VideoFileHandler:
 
         if self._use_queue:
             # 放入队列异步处理
-            self._upload_queue.put(file_path)
+            self._upload_queue.put(
+                (file_path, dict(tmdb_override)) if tmdb_override else file_path
+            )
 
             queue_size = self._upload_queue.qsize()
             console_log(f"\n✅ 已加入处理队列: {os.path.basename(file_path)}")
@@ -1928,7 +1951,7 @@ class VideoFileHandler:
             return True
         else:
             # 同步直接处理
-            return self._process_file_internal(file_path)
+            return self._process_file_internal(file_path, tmdb_override=tmdb_override)
 
     def stop_upload_queue(self):
         """停止上传队列处理线程"""

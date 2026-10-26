@@ -149,17 +149,17 @@ async function browsePathFromApi(path) {
     return await apiRequest(`/manual/browse?path=${encodeURIComponent(path || '')}`);
 }
 
-async function processFileViaApi(filePath, force) {
+async function processFileViaApi(filePath, force, selection = {}) {
     return await apiRequest('/manual/process', {
         method: 'POST',
-        body: JSON.stringify({ file_path: filePath, force })
+        body: JSON.stringify({ file_path: filePath, force, ...selection })
     });
 }
 
-async function previewFileViaApi(filePath) {
+async function previewFileViaApi(filePath, selection = {}) {
     return await apiRequest('/manual/preview', {
         method: 'POST',
-        body: JSON.stringify({ file_path: filePath })
+        body: JSON.stringify({ file_path: filePath, ...selection })
     });
 }
 
@@ -170,17 +170,17 @@ async function scanDirectoryViaApi(directory, recursive) {
     });
 }
 
-async function validateScrapeViaApi(filePath) {
+async function validateScrapeViaApi(filePath, selection = {}) {
     return await apiRequest('/manual/validate', {
         method: 'POST',
-        body: JSON.stringify({ file_path: filePath })
+        body: JSON.stringify({ file_path: filePath, ...selection })
     });
 }
 
-async function processBatchViaApi(files) {
+async function processBatchViaApi(files, selection = {}) {
     return await apiRequest('/manual/process-batch', {
         method: 'POST',
-        body: JSON.stringify(files)
+        body: JSON.stringify(selection.tmdb_id ? { file_paths: files, ...selection } : files)
     });
 }
 

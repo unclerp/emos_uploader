@@ -9,10 +9,10 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Literal, Union
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, root_validator
 
 from ..services.state import get_state_manager
 from ...utils.logging_utils import set_file_id, clear_file_id
@@ -78,7 +78,32 @@ def _get_validate_executor() -> ThreadPoolExecutor:
         return _validate_executor
 
 
-class ProcessFileRequest(BaseModel):
+class TmdbSelection(BaseModel):
+    """一次请求的条目选择，不写入全局配置。"""
+
+    tmdb_id: Optional[int] = Field(default=None, gt=0)
+    media_type: Optional[Literal["tv", "movie"]] = None
+
+    @root_validator(skip_on_failure=True)
+    def require_type_for_id(cls, values):
+        if values.get("tmdb_id") is not None and values.get("media_type") is None:
+            raise ValueError("指定 TMDB 编号时必须选择电影或电视剧")
+        return values
+
+    def tmdb_override(self):
+        return (
+            {"tmdb_id": self.tmdb_id, "media_type": self.media_type}
+            if self.tmdb_id is not None
+            else None
+        )
+
+
+class ProcessBatchRequest(TmdbSelection):
+    file_paths: List[str]
+    force: bool = False
+
+
+class ProcessFileRequest(TmdbSelection):
     """处理文件请求"""
     file_path: str
     force: bool = False  # 是否强制处理（即使已在队列中）
@@ -106,7 +131,7 @@ class ScanDirectoryResponse(BaseModel):
     count: int
 
 
-class PreviewRequest(BaseModel):
+class PreviewRequest(TmdbSelection):
     """预览请求"""
     file_path: str
 
@@ -122,10 +147,9 @@ class PreviewResponse(BaseModel):
     error: Optional[str] = None
 
 
-class ValidateRequest(BaseModel):
+class ValidateRequest(TmdbSelection):
     """刮削验证请求"""
     file_path: str
-    media_type: Optional[str] = None
 
 
 class ValidateResponse(BaseModel):
@@ -163,41 +187,47 @@ async def process_file(request: ProcessFileRequest):
     try:
         state = get_state_manager()
         handler = state.get_video_handler()
-        
+
         if handler is None:
             raise HTTPException(status_code=503, detail="系统未就绪")
-        
+
         file_path = Path(request.file_path)
-        
+
         if not file_path.exists():
             raise HTTPException(status_code=404, detail=f"文件不存在: {request.file_path}")
-        
+
         if not file_path.is_file():
             raise HTTPException(status_code=400, detail=f"不是有效文件: {request.file_path}")
-        
+
         # 检查是否已在队列中
-        if not request.force:
+        if not request.force or request.tmdb_id is not None:
             queued_files = state.get_queued_files()
             processing_files = state.get_processing_files()
-            
+
             if str(file_path) in queued_files or str(file_path) in processing_files:
                 return ProcessFileResponse(
                     success=False,
                     message="文件已在处理队列中，如需重新处理请使用 force=true",
                     file_path=request.file_path,
                 )
-        
+
         # 触发处理
-        handler.force_process_file(str(file_path))
-        
+        (
+            handler.force_process_file(
+                str(file_path), tmdb_override=request.tmdb_override()
+            )
+            if request.tmdb_id
+            else handler.force_process_file(str(file_path))
+        )
+
         logger.info(f"已手动触发文件处理: {request.file_path}")
-        
+
         return ProcessFileResponse(
             success=True,
             message=f"已添加到处理队列: {request.file_path}",
             file_path=request.file_path,
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -265,7 +295,13 @@ async def scan_directory(request: ScanDirectoryRequest):
 
 
 @router.post("/process-batch")
-async def process_batch_files(file_paths: List[str]):
+async def process_batch_files(request: Union[ProcessBatchRequest, List[str]]):
+    options = (
+        request
+        if isinstance(request, ProcessBatchRequest)
+        else ProcessBatchRequest(file_paths=request)
+    )
+    file_paths = options.file_paths
     """
     批量处理文件
     
@@ -277,33 +313,39 @@ async def process_batch_files(file_paths: List[str]):
     try:
         state = get_state_manager()
         handler = state.get_video_handler()
-        
+
         if handler is None:
             raise HTTPException(status_code=503, detail="系统未就绪")
-        
+
         added_count = 0
         skipped_count = 0
         errors = []
-        
+
         queued_files = state.get_queued_files()
         processing_files = state.get_processing_files()
-        
+
         for file_path in file_paths:
             path = Path(file_path)
-            
-            if not path.exists():
+
+            if not path.is_file():
                 errors.append(f"{file_path}: 文件不存在")
                 continue
-            
+
             if str(path) in queued_files or str(path) in processing_files:
                 skipped_count += 1
                 continue
-            
-            handler.force_process_file(str(path))
+
+            (
+                handler.force_process_file(
+                    str(path), tmdb_override=options.tmdb_override()
+                )
+                if options.tmdb_id
+                else handler.force_process_file(str(path))
+            )
             added_count += 1
-        
+
         logger.info(f"批量处理: 添加 {added_count} 个文件，跳过 {skipped_count} 个")
-        
+
         return {
             "success": True,
             "message": f"已添加 {added_count} 个文件到队列",
@@ -311,7 +353,7 @@ async def process_batch_files(file_paths: List[str]):
             "skipped_count": skipped_count,
             "errors": errors if errors else None,
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -319,7 +361,7 @@ async def process_batch_files(file_paths: List[str]):
         raise HTTPException(status_code=500, detail=f"批量处理失败: {e}")
 
 
-def _do_preview(raw_path: str, config: dict) -> PreviewResponse:
+def _do_preview(raw_path: str, config: dict, tmdb_override=None) -> PreviewResponse:
     file_path = Path(raw_path)
 
     if not file_path.exists():
@@ -338,7 +380,11 @@ def _do_preview(raw_path: str, config: dict) -> PreviewResponse:
         if tmdb_client:
             renamer.tmdb_client = tmdb_client
 
-        metadata = renamer.extract_metadata(raw_path)
+        metadata = (
+            renamer.extract_metadata_with_tmdb(raw_path, **tmdb_override)
+            if tmdb_override
+            else renamer.extract_metadata(raw_path)
+        )
     finally:
         clear_file_id()
 
@@ -373,6 +419,7 @@ def _do_preview(raw_path: str, config: dict) -> PreviewResponse:
             "year": year,
             "episode_title": episode_title,
             "tmdb_matched": tmdb_matched,
+            "tmdb_id": metadata.get("tmdb_id"),
         },
     )
 
@@ -396,7 +443,11 @@ async def preview_rename(request: PreviewRequest):
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                _get_validate_executor(), _do_preview, raw_path, config
+                _get_validate_executor(),
+                _do_preview,
+                raw_path,
+                config,
+                request.tmdb_override(),
             )
             return result
         except HTTPException:
@@ -412,7 +463,9 @@ async def preview_rename(request: PreviewRequest):
             )
 
 
-def _do_validate(raw_path: str, config: dict, media_type: Optional[str] = None) -> ValidateResponse:
+def _do_validate(
+    raw_path: str, config: dict, media_type: Optional[str] = None, tmdb_override=None
+) -> ValidateResponse:
     file_path = Path(raw_path)
 
     original_name = file_path.stem if file_path.suffix else file_path.name
@@ -429,7 +482,11 @@ def _do_validate(raw_path: str, config: dict, media_type: Optional[str] = None) 
         if tmdb_client:
             renamer.tmdb_client = tmdb_client
 
-        metadata = renamer.extract_metadata(parse_input, media_type_hint=media_type)
+        metadata = (
+            renamer.extract_metadata_with_tmdb(parse_input, **tmdb_override)
+            if tmdb_override
+            else renamer.extract_metadata(parse_input, media_type_hint=media_type)
+        )
     finally:
         clear_file_id()
 
@@ -506,7 +563,12 @@ async def validate_scrape(request: ValidateRequest):
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                _get_validate_executor(), _do_validate, raw_path, config, media_type
+                _get_validate_executor(),
+                _do_validate,
+                raw_path,
+                config,
+                media_type,
+                request.tmdb_override(),
             )
             return result
         except HTTPException:
