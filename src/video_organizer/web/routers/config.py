@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..services.state import get_state_manager
@@ -21,6 +21,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _ini_config_only():
+    """屏蔽历史数据库配置接口，避免旧网页继续编辑无效副本。"""
+    raise HTTPException(
+        status_code=409,
+        detail="此项数据库重复配置已暂停使用，请在 INI 配置中编辑；LLM 提供商仍使用数据库，已有数据保留。",
+    )
+
+
+db_router = APIRouter(dependencies=[Depends(_ini_config_only)])
+
+
 class ConfigUpdateRequest(BaseModel):
     section: str
     key: str
@@ -30,6 +41,7 @@ class ConfigUpdateRequest(BaseModel):
 class ConfigSectionUpdateRequest(BaseModel):
     section: str
     values: Dict[str, Any]
+    replace: bool = False
 
 
 class ConfigResponse(BaseModel):
@@ -71,7 +83,7 @@ class RuntimeConfigUpdateRequest(BaseModel):
 
 
 # 手动规则
-@router.get("/db/manual-rules")
+@db_router.get("/db/manual-rules")
 async def get_manual_rules():
     try:
         with get_session_local()() as db:
@@ -86,7 +98,7 @@ async def get_manual_rules():
         raise HTTPException(status_code=500, detail=f"获取手动规则失败: {e}")
 
 
-@router.post("/db/manual-rules", status_code=201)
+@db_router.post("/db/manual-rules", status_code=201)
 async def create_manual_rule(request: ManualRuleCreateRequest):
     try:
         with get_session_local()() as db:
@@ -103,7 +115,7 @@ async def create_manual_rule(request: ManualRuleCreateRequest):
         raise HTTPException(status_code=500, detail=f"创建手动规则失败: {e}")
 
 
-@router.put("/db/manual-rules/{rule_id}")
+@db_router.put("/db/manual-rules/{rule_id}")
 async def update_manual_rule(rule_id: int, request: ManualRuleCreateRequest):
     try:
         with get_session_local()() as db:
@@ -122,7 +134,7 @@ async def update_manual_rule(rule_id: int, request: ManualRuleCreateRequest):
         raise HTTPException(status_code=500, detail=f"更新手动规则失败: {e}")
 
 
-@router.delete("/db/manual-rules/{rule_id}")
+@db_router.delete("/db/manual-rules/{rule_id}")
 async def delete_manual_rule(rule_id: int):
     try:
         with get_session_local()() as db:
@@ -139,7 +151,7 @@ async def delete_manual_rule(rule_id: int):
 
 
 # 字幕组映射
-@router.get("/db/release-groups")
+@db_router.get("/db/release-groups")
 async def get_release_groups():
     try:
         with get_session_local()() as db:
@@ -153,7 +165,7 @@ async def get_release_groups():
         raise HTTPException(status_code=500, detail=f"获取字幕组映射失败: {e}")
 
 
-@router.post("/db/release-groups", status_code=201)
+@db_router.post("/db/release-groups", status_code=201)
 async def create_release_group(request: ReleaseGroupCreateRequest):
     try:
         with get_session_local()() as db:
@@ -176,7 +188,7 @@ async def create_release_group(request: ReleaseGroupCreateRequest):
         raise HTTPException(status_code=500, detail=f"创建字幕组映射失败: {e}")
 
 
-@router.put("/db/release-groups/{group_id}")
+@db_router.put("/db/release-groups/{group_id}")
 async def update_release_group(group_id: int, request: ReleaseGroupCreateRequest):
     try:
         with get_session_local()() as db:
@@ -194,7 +206,7 @@ async def update_release_group(group_id: int, request: ReleaseGroupCreateRequest
         raise HTTPException(status_code=500, detail=f"更新字幕组映射失败: {e}")
 
 
-@router.delete("/db/release-groups/{group_id}")
+@db_router.delete("/db/release-groups/{group_id}")
 async def delete_release_group(group_id: int):
     try:
         with get_session_local()() as db:
@@ -292,7 +304,7 @@ async def delete_llm_provider(provider_id: int):
 
 
 # 运行时配置
-@router.get("/db/runtime")
+@db_router.get("/db/runtime")
 async def get_runtime_config():
     try:
         with get_session_local()() as db:
@@ -306,7 +318,7 @@ async def get_runtime_config():
         raise HTTPException(status_code=500, detail=f"获取运行时配置失败: {e}")
 
 
-@router.put("/db/runtime/{config_key}")
+@db_router.put("/db/runtime/{config_key}")
 async def update_runtime_config(config_key: str, request: RuntimeConfigUpdateRequest):
     try:
         with get_session_local()() as db:
@@ -324,6 +336,9 @@ async def update_runtime_config(config_key: str, request: RuntimeConfigUpdateReq
             return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新运行时配置失败: {e}")
+
+
+router.include_router(db_router)
 
 
 # ===== INI Config Endpoints =====
@@ -386,7 +401,11 @@ async def update_config_section(request: ConfigSectionUpdateRequest):
         state = get_state_manager()
         config = state.get_config()
         config_path = state.get_config_path()
-        if request.section not in config:
+        if request.section == "release_group_mapping" and any(
+            value not in ("anime", "drama", "movie") for value in request.values.values()
+        ):
+            raise HTTPException(status_code=422, detail="字幕组类型必须为 anime、drama 或 movie")
+        if request.replace or request.section not in config:
             config[request.section] = {}
         config[request.section].update(request.values)
         if config_path:
@@ -397,6 +416,8 @@ async def update_config_section(request: ConfigSectionUpdateRequest):
         else:
             state.set_config(config, config_path)
         return ConfigResponse(success=True, message=f"配置节 '{request.section}' 已更新", config=config)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"更新配置节失败: {e}")
         raise HTTPException(status_code=500, detail=f"更新配置节失败: {e}")

@@ -121,10 +121,10 @@ async function reloadConfigViaApi() {
     return await apiRequest('/config/reload', { method: 'POST' });
 }
 
-async function saveConfigToApi(section, values) {
+async function saveConfigToApi(section, values, replace = false) {
     return await apiRequest('/config/section', {
         method: 'PUT',
-        body: JSON.stringify({ section, values })
+        body: JSON.stringify({ section, values, replace })
     });
 }
 

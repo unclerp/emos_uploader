@@ -4,7 +4,6 @@ import string
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from ..web.auth import hash_password
 from .models import (
     ManualRule, ReleaseGroupMapping, LlmProvider, AuthUser, RuntimeConfig,
 )
@@ -23,7 +22,7 @@ def get_first_run_credentials() -> tuple:
 
 
 def seed_from_ini(config: Dict[str, Any]) -> bool:
-    """从 INI 配置字典导入数据到数据库（表为空时才导入）"""
+    """初始化登录账号和 LLM 提供商；其他重复业务配置不再导入。"""
     try:
         session_local = get_session_local()
     except Exception:
@@ -34,48 +33,7 @@ def seed_from_ini(config: Dict[str, Any]) -> bool:
         with session_local() as db:
             now = datetime.now()
 
-            # 1. Manual Rules — 存储原始规则字符串
-            if db.query(ManualRule).count() == 0:
-                rules_config = config.get("manual_rules", {})
-                if str(rules_config.get("enabled", "true")).lower() == "true":
-                    # 优先处理 rules 列表（list[dict] 格式），回退到 rule1/rule2 旧格式
-                    raw_rules = rules_config.get("rules", [])
-                    if isinstance(raw_rules, list):
-                        for idx, entry in enumerate(raw_rules):
-                            rule_str = ""
-                            if isinstance(entry, dict):
-                                rule_str = str(entry.get("rule", "")).strip()
-                            elif isinstance(entry, str):
-                                rule_str = entry.strip()
-                            if rule_str:
-                                db.add(ManualRule(rule_text=rule_str, sort_order=idx, created_at=now))
-                    else:
-                        for key in sorted(rules_config.keys()):
-                            if key.startswith("rule") and key[4:].isdigit():
-                                rule_str = str(rules_config[key]).strip()
-                                if rule_str:
-                                    db.add(ManualRule(
-                                        rule_text=rule_str,
-                                        sort_order=int(key[4:]),
-                                        created_at=now,
-                                    ))
-                    logger.info("已从 INI 导入手动规则到数据库")
-                    seeded = True
-
-            # 2. Release Group Mapping
-            if db.query(ReleaseGroupMapping).count() == 0:
-                rg_config = config.get("release_group_mapping", {})
-                for name, ctype in rg_config.items():
-                    if name and ctype:
-                        db.add(ReleaseGroupMapping(
-                            group_name=name.strip(),
-                            content_type=ctype.strip(),
-                            created_at=now,
-                        ))
-                if rg_config:
-                    logger.info("已从 INI 导入字幕组映射到数据库")
-                    seeded = True
-
+            # 手动规则、字幕组映射和运行时配置暂停重复导入，历史数据保留。
             # 3. LLM Providers
             if db.query(LlmProvider).count() == 0:
                 for section, values in config.items():
@@ -94,8 +52,11 @@ def seed_from_ini(config: Dict[str, Any]) -> bool:
                 logger.info("已从 INI 导入 LLM Provider 到数据库")
                 seeded = True
 
+
             # 4. Auth Users — 首次运行自动生成随机密码（不依赖 auth.enabled）
             if db.query(AuthUser).count() == 0:
+                from ..web.auth import hash_password
+
                 global _first_run_username, _first_run_password
                 auth_config = config.get("auth", {})
                 chars = string.ascii_letters + string.digits + "!@#$%^&*"
@@ -119,19 +80,6 @@ def seed_from_ini(config: Dict[str, Any]) -> bool:
                 print(f"   用户名: {_first_run_username}", flush=True)
                 print(f"   密码: {raw_pw}", flush=True)
                 print("=" * 60, flush=True)
-                seeded = True
-
-            # 5. Runtime Config
-            if db.query(RuntimeConfig).count() == 0:
-                proc = config.get("processing", {})
-                items = {
-                    "upload_targets": str(proc.get("upload_targets", "")),
-                    "delete_after_upload": str(proc.get("delete_after_upload", "false")),
-                    "max_upload_workers": str(proc.get("max_upload_workers", "1")),
-                }
-                for k, v in items.items():
-                    db.add(RuntimeConfig(key=k, value=v, description="", updated_at=now))
-                logger.info("已从 INI 导入运行时配置到数据库")
                 seeded = True
 
             if seeded:

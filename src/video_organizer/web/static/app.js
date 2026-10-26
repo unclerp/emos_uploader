@@ -507,47 +507,24 @@ async function retryAllFailedTasks() {
 // ===== 配置 =====
 
 let _configCurrentSection = 'monitoring';
-let _dbManualRules = [];
-let _dbReleaseGroups = [];
 let _dbLlmProviders = [];
-let _dbRuntimeConfig = [];
+
+async function loadDbConfigs() {
+    const result = await loadLlmProvidersFromApi();
+    _dbLlmProviders = result.providers || [];
+    const badge = document.getElementById('lpCount');
+    if (badge) badge.textContent = _dbLlmProviders.length;
+}
+
 
 async function loadConfig() {
     try {
         state.config = await loadConfigFromApi();
         await loadDbConfigs();
         renderConfigEditor();
-    setupConfigNav();
-    setupConfigSearch();
-    updateConfigBadges();
+        setupConfigNav();
+        setupConfigSearch();
     } catch (e) { if (!e.message.includes('登录已过期')) console.error('加载配置失败:', e); }
-}
-
-async function loadDbConfigs() {
-    try {
-        const [mr, rg, lp, rt] = await Promise.all([
-            loadManualRulesFromApi(),
-            loadReleaseGroupsFromApi(),
-            loadLlmProvidersFromApi(),
-            loadRuntimeConfigFromApi(),
-        ]);
-        _dbManualRules = mr.rules || [];
-        _dbReleaseGroups = rg.groups || [];
-        _dbLlmProviders = lp.providers || [];
-        _dbRuntimeConfig = rt.configs || [];
-        updateConfigBadges();
-    } catch (e) { console.error('加载数据库配置失败:', e); }
-}
-
-function updateConfigBadges() {
-    const mr = document.getElementById('mrCount');
-    const rg = document.getElementById('rgCount');
-    const lp = document.getElementById('lpCount');
-    const rt = document.getElementById('rtCount');
-    if (mr) mr.textContent = _dbManualRules.length;
-    if (rg) rg.textContent = _dbReleaseGroups.length;
-    if (lp) lp.textContent = _dbLlmProviders.length;
-    if (rt) rt.textContent = _dbRuntimeConfig.length;
 }
 
 function setupConfigNav() {
@@ -579,8 +556,8 @@ function setupConfigSearch() {
 
 function renderConfigEditor() {
     const section = _configCurrentSection;
-    if (section.startsWith('__')) {
-        renderDbConfigEditor(section);
+    if (section === '__llm_providers') {
+        renderLlmProviders();
         return;
     }
     renderIniConfigEditor(section);
@@ -594,8 +571,13 @@ function renderIniConfigEditor(section) {
     }
 
     let html = `<div class="config-section"><div class="config-section-title">${getSectionLabel(section)}</div><div class="config-grid">`;
-    for (const [k, v] of Object.entries(config[section])) {
-        html += renderConfigField(section, k, v);
+    if (section === 'release_group_mapping') {
+        html += `<div class="config-field"><div class="config-field-label">字幕组映射（JSON 对象）</div><textarea name="release_group_mapping.__entries" rows="12" spellcheck="false">${escapeHtml(JSON.stringify(config[section], null, 2))}</textarea><small>可添加或删除字幕组，类型为 anime、drama 或 movie。</small></div>`;
+    } else {
+        for (const [k, v] of Object.entries(config[section])) {
+            if (section === 'manual_rules' && k.startsWith('rule') && k !== 'rules') continue;
+            html += renderConfigField(section, k, v);
+        }
     }
     html += `</div></div>`;
     el.configEditor.innerHTML = html;
@@ -620,6 +602,9 @@ function getSectionLabel(section) {
         'recycle_clean': '回收站清理',
         'emos': 'Emby 云盘', 'telegram': 'Telegram', 'guessit': 'GuessIt 解析',
         'emya_db': 'Emby 数据库', 'downloaders': '下载器列表',
+        'manual_rules': '手动规则（INI）', 'release_group_mapping': '字幕组映射（INI）',
+        'llm_fallback': 'LLM 兜底识别', 'llm_provider_1': 'LLM 提供商 1',
+        'llm_provider_2': 'LLM 提供商 2', 'llm_provider_3': 'LLM 提供商 3',
     };
     return labels[section] || section;
 }
@@ -638,6 +623,9 @@ function renderConfigField(section, key, value) {
             <input type="checkbox" id="${inputId}" name="${inputName}" ${value ? 'checked' : ''} style="display:none">
             <span class="toggle-label" id="${inputId}-label">${value ? '启用' : '禁用'}</span>
         </div>`;
+    } else if (section === 'manual_rules' && key === 'rules') {
+        const rules = value.map(r => typeof r === 'string' ? r : r.rule).filter(Boolean);
+        inputHtml = `<textarea id="${inputId}" name="${inputName}" rows="8" spellcheck="false">${escapeHtml(rules.join('\n'))}</textarea><small>每行一条规则，由手动规则总开关控制启用。</small>`;
     } else if (Array.isArray(value)) {
         inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(value.join(', '))}">`;
     } else if (typeof value === 'object' && value !== null) {
@@ -653,170 +641,6 @@ function renderConfigField(section, key, value) {
         ${inputHtml}
     </div>`;
 }
-
-function renderDbConfigEditor(section) {
-    switch (section) {
-        case '__manual_rules': return renderManualRules();
-        case '__release_groups': return renderReleaseGroups();
-        case '__llm_providers': return renderLlmProviders();
-        case '__runtime': return renderRuntimeConfig();
-    }
-}
-
-// ===== 手动规则 =====
-
-function renderManualRules() {
-    const rules = _dbManualRules;
-    let html = `<div class="config-section"><div class="config-section-title">手动规则</div>`;
-    if (rules.length === 0) {
-        html += `<div class="config-empty"><span class="empty-icon">⌀</span><span>暂无规则</span></div>`;
-    } else {
-        html += `<div class="config-table-wrap"><table class="config-table">
-            <thead><tr><th style="width:36px">#</th><th>规则内容</th><th style="width:60px">启用</th><th style="width:140px">操作</th></tr></thead><tbody>`;
-        rules.forEach((r, i) => {
-            html += `<tr>
-                <td style="color:var(--text-muted);font-size:0.75rem">${i + 1}</td>
-                <td><input type="text" class="mr-text" data-id="${r.id}" value="${escapeHtml(r.rule_text)}" style="font-family:monospace"></td>
-                <td><input type="checkbox" class="mr-enabled" data-id="${r.id}" ${r.enabled ? 'checked' : ''} style="width:auto"></td>
-                <td><div class="btn-cell">
-                    <button class="save-btn" onclick="saveManualRule(${r.id})">保存</button>
-                    <button class="del-btn" onclick="deleteManualRule(${r.id})">删除</button>
-                </div></td>
-            </tr>`;
-        });
-        html += `</tbody></table></div>`;
-    }
-    html += `<div class="add-row-bar">
-        <input type="text" id="newMrText" placeholder="新规则内容..." style="flex:1;font-family:monospace">
-        <button class="add-btn" onclick="addManualRule()">+ 添加</button>
-    </div></div>`;
-    el.configEditor.innerHTML = html;
-}
-
-async function addManualRule() {
-    const input = document.getElementById('newMrText');
-    const text = input?.value.trim();
-    if (!text) return showToast('请输入规则内容', 'warning');
-    try {
-        await createManualRuleViaApi({ rule_text: text, enabled: true, sort_order: _dbManualRules.length });
-        showToast('规则已添加', 'success');
-        await loadDbConfigs();
-        renderManualRules();
-    } catch (e) { showToast(`添加失败: ${e.message}`, 'error'); }
-}
-
-window.addManualRule = addManualRule;
-
-async function saveManualRule(id) {
-    const textInput = document.querySelector(`.mr-text[data-id="${id}"]`);
-    const enabledInput = document.querySelector(`.mr-enabled[data-id="${id}"]`);
-    if (!textInput) return;
-    try {
-        await updateManualRuleViaApi(id, {
-            rule_text: textInput.value,
-            enabled: enabledInput?.checked ?? true,
-            sort_order: 0,
-        });
-        showToast('规则已保存', 'success');
-        await loadDbConfigs();
-        renderManualRules();
-    } catch (e) { showToast(`保存失败: ${e.message}`, 'error'); }
-}
-
-window.saveManualRule = saveManualRule;
-
-async function deleteManualRule(id) {
-    if (!confirm('确定删除此规则？')) return;
-    try {
-        await deleteManualRuleViaApi(id);
-        showToast('规则已删除', 'success');
-        await loadDbConfigs();
-        renderManualRules();
-    } catch (e) { showToast(`删除失败: ${e.message}`, 'error'); }
-}
-
-window.deleteManualRule = deleteManualRule;
-
-// ===== 字幕组映射 =====
-
-function renderReleaseGroups() {
-    const groups = _dbReleaseGroups;
-    let html = `<div class="config-section"><div class="config-section-title">字幕组映射</div>`;
-    if (groups.length === 0) {
-        html += `<div class="config-empty"><span class="empty-icon">⌀</span><span>暂无映射</span></div>`;
-    } else {
-        html += `<div class="config-table-wrap"><table class="config-table">
-            <thead><tr><th>字幕组名称</th><th>类型</th><th style="width:140px">操作</th></tr></thead><tbody>`;
-        groups.forEach(g => {
-            html += `<tr>
-                <td><input type="text" class="rg-name" data-id="${g.id}" value="${escapeHtml(g.group_name)}"></td>
-                <td><select class="rg-type" data-id="${g.id}">
-                    <option value="anime" ${g.content_type === 'anime' ? 'selected' : ''}>动画</option>
-                    <option value="drama" ${g.content_type === 'drama' ? 'selected' : ''}>剧集</option>
-                    <option value="movie" ${g.content_type === 'movie' ? 'selected' : ''}>电影</option>
-                </select></td>
-                <td><div class="btn-cell">
-                    <button class="save-btn" onclick="saveReleaseGroup(${g.id})">保存</button>
-                    <button class="del-btn" onclick="deleteReleaseGroup(${g.id})">删除</button>
-                </div></td>
-            </tr>`;
-        });
-        html += `</tbody></table></div>`;
-    }
-    html += `<div class="add-row-bar">
-        <input type="text" id="newRgName" placeholder="字幕组名称..." style="flex:1">
-        <select id="newRgType">
-            <option value="anime">动画</option>
-            <option value="drama">剧集</option>
-            <option value="movie">电影</option>
-        </select>
-        <button class="add-btn" onclick="addReleaseGroup()">+ 添加</button>
-    </div></div>`;
-    el.configEditor.innerHTML = html;
-}
-
-async function addReleaseGroup() {
-    const name = document.getElementById('newRgName')?.value.trim();
-    const type = document.getElementById('newRgType')?.value;
-    if (!name) return showToast('请输入字幕组名称', 'warning');
-    try {
-        await createReleaseGroupViaApi({ group_name: name, content_type: type });
-        showToast('映射已添加', 'success');
-        await loadDbConfigs();
-        renderReleaseGroups();
-    } catch (e) { showToast(`添加失败: ${e.message}`, 'error'); }
-}
-
-window.addReleaseGroup = addReleaseGroup;
-
-async function saveReleaseGroup(id) {
-    const nameInput = document.querySelector(`.rg-name[data-id="${id}"]`);
-    const typeSelect = document.querySelector(`.rg-type[data-id="${id}"]`);
-    if (!nameInput) return;
-    try {
-        await updateReleaseGroupViaApi(id, {
-            group_name: nameInput.value,
-            content_type: typeSelect.value,
-        });
-        showToast('映射已保存', 'success');
-        await loadDbConfigs();
-        renderReleaseGroups();
-    } catch (e) { showToast(`保存失败: ${e.message}`, 'error'); }
-}
-
-window.saveReleaseGroup = saveReleaseGroup;
-
-async function deleteReleaseGroup(id) {
-    if (!confirm('确定删除此映射？')) return;
-    try {
-        await deleteReleaseGroupViaApi(id);
-        showToast('映射已删除', 'success');
-        await loadDbConfigs();
-        renderReleaseGroups();
-    } catch (e) { showToast(`删除失败: ${e.message}`, 'error'); }
-}
-
-window.deleteReleaseGroup = deleteReleaseGroup;
 
 // ===== LLM 提供商 =====
 
@@ -904,43 +728,6 @@ async function deleteLlmProvider(id) {
 
 window.deleteLlmProvider = deleteLlmProvider;
 
-// ===== 运行时配置 =====
-
-function renderRuntimeConfig() {
-    const configs = _dbRuntimeConfig;
-    let html = `<div class="config-section"><div class="config-section-title">运行时配置</div>`;
-    if (configs.length === 0) {
-        html += `<div class="config-empty"><span class="empty-icon">⌀</span><span>暂无配置项</span></div>`;
-    } else {
-        html += `<div class="config-table-wrap"><table class="config-table">
-            <thead><tr><th>配置键</th><th>值</th><th>说明</th><th style="width:90px">操作</th></tr></thead><tbody>`;
-        configs.forEach(c => {
-            html += `<tr>
-                <td style="font-family:monospace;font-size:0.75rem;color:var(--text-muted)">${escapeHtml(c.key)}</td>
-                <td><input class="rt-value" data-key="${escapeHtml(c.key)}" value="${escapeHtml(c.value || '')}" style="font-family:monospace"></td>
-                <td style="font-size:0.75rem;color:var(--text-muted)">${escapeHtml(c.description || '')}</td>
-                <td><div class="btn-cell"><button class="save-btn" onclick="saveRuntimeConfig('${escapeHtml(c.key)}')">保存</button></div></td>
-            </tr>`;
-        });
-        html += `</tbody></table></div>`;
-    }
-    html += `</div>`;
-    el.configEditor.innerHTML = html;
-}
-
-async function saveRuntimeConfig(key) {
-    const input = document.querySelector(`.rt-value[data-key="${CSS.escape(key)}"]`);
-    if (!input) return;
-    try {
-        await updateRuntimeConfigViaApi(key, { value: input.value });
-        showToast('配置已保存', 'success');
-        await loadDbConfigs();
-        renderRuntimeConfig();
-    } catch (e) { showToast(`保存失败: ${e.message}`, 'error'); }
-}
-
-window.saveRuntimeConfig = saveRuntimeConfig;
-
 // ===== 保存 / 重新加载 INI 配置 =====
 
 async function reloadConfig() {
@@ -952,6 +739,20 @@ async function reloadConfig() {
 }
 
 async function saveConfig() {
+    if (_configCurrentSection === 'release_group_mapping') {
+        try {
+            const input = el.configEditor.querySelector('[name="release_group_mapping.__entries"]');
+            const mapping = JSON.parse(input.value);
+            if (!mapping || Array.isArray(mapping) || typeof mapping !== 'object' ||
+                Object.values(mapping).some(v => !['anime', 'drama', 'movie'].includes(v))) {
+                throw new Error('映射必须是 JSON 对象，类型为 anime、drama 或 movie');
+            }
+            await saveConfigToApi('release_group_mapping', mapping, true);
+            await loadConfig();
+            showToast('INI 配置已保存', 'success');
+        } catch (e) { showToast(`保存失败: ${e.message}`, 'error'); }
+        return;
+    }
     const inputs = el.configEditor.querySelectorAll('[name]');
     const sections = {};
 
@@ -965,6 +766,9 @@ async function saveConfig() {
         } else if (!isNaN(Number(value)) && value.trim() !== '') {
             const num = Number(value);
             if (Number.isFinite(num)) value = num;
+        }
+        if (section === 'manual_rules' && key === 'rules') {
+            value = String(value).split(/\r?\n/).map(rule => rule.trim()).filter(Boolean).map(rule => ({rule, enabled: true}));
         }
         sections[section][key] = value;
     });

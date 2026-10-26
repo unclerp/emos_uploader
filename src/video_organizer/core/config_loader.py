@@ -501,7 +501,7 @@ def update_config(
             config[section] = {}
             for key, value in options.items():
                 # manual_rules.rules 由下面的 ruleN 写回，跳过
-                if section == "manual_rules" and key == "rules":
+                if section == "manual_rules" and (key == "rules" or key.startswith("rule")):
                     continue
                 if isinstance(value, list):
                     try:

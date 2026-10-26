@@ -265,7 +265,7 @@
                 <div class="page-header">
                     <div class="page-header-left">
                         <h1 class="page-title">配置管理</h1>
-                        <p class="page-subtitle">广播控制台 · 系统配置与控制面板</p>
+                        <p class="page-subtitle">常规配置以 INI 为准；LLM 提供商继续使用数据库。</p>
                     </div>
                     <div class="page-header-actions">
                         <div class="config-search" id="configSearchWrapper">
@@ -376,27 +376,23 @@
                         <div class="cnav-group">
                             <div class="cnav-group-title">
                                 <span class="led led-amber"></span>
-                                数据库配置
+                                识别与规则（INI）
                             </div>
-                            <a class="cnav-item" data-section="__manual_rules">
-                                <span class="cnav-led"></span>
-                                <span class="cnav-label">手动规则</span>
-                                <span class="cnav-badge" id="mrCount">0</span>
+                            <a class="cnav-item" data-section="manual_rules">
+                                <span class="cnav-led"></span><span class="cnav-label">手动规则</span>
                             </a>
-                            <a class="cnav-item" data-section="__release_groups">
-                                <span class="cnav-led"></span>
-                                <span class="cnav-label">字幕组映射</span>
-                                <span class="cnav-badge" id="rgCount">0</span>
+                            <a class="cnav-item" data-section="release_group_mapping">
+                                <span class="cnav-led"></span><span class="cnav-label">字幕组映射</span>
                             </a>
+                            <a class="cnav-item" data-section="llm_fallback">
+                                <span class="cnav-led"></span><span class="cnav-label">LLM 兜底识别</span>
+                            </a>
+                        </div>
+                        <div class="cnav-group">
+                            <div class="cnav-group-title"><span class="led led-amber"></span>LLM 配置（数据库）</div>
                             <a class="cnav-item" data-section="__llm_providers">
-                                <span class="cnav-led"></span>
-                                <span class="cnav-label">LLM 提供商</span>
+                                <span class="cnav-led"></span><span class="cnav-label">LLM 提供商</span>
                                 <span class="cnav-badge" id="lpCount">0</span>
-                            </a>
-                            <a class="cnav-item" data-section="__runtime">
-                                <span class="cnav-led"></span>
-                                <span class="cnav-label">运行时配置</span>
-                                <span class="cnav-badge" id="rtCount">0</span>
                             </a>
                         </div>
                     </nav>
