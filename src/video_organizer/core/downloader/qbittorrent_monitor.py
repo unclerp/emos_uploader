@@ -1,16 +1,14 @@
 """qBittorrent 下载监控器"""
 
 import os
-import json
 import time
 import logging
 import threading
 import requests
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any, List
-from collections import defaultdict
+from typing import Optional, Callable, Dict
 
-from .base import DownloaderMonitor, decode_file_path
+from .base import DownloaderMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +17,12 @@ class QBittorrentMonitor(DownloaderMonitor):
     """
     Monitor for qBittorrent downloader.
     """
+
+    # qB 4.x 使用 pausedUP，5.x 使用 stoppedUP；未知状态一律等待。
+    READY_STATES = frozenset(
+        {"uploading", "stalledUP", "forcedUP", "queuedUP", "pausedUP", "stoppedUP"}
+    )
+    requires_native_readiness = True
 
     def __init__(
         self,
@@ -41,77 +45,45 @@ class QBittorrentMonitor(DownloaderMonitor):
             path_mappings: 路径映射字典，将下载器返回的路径映射到主机实际路径
         """
         super().__init__(callback)
-        self.rpc_url = rpc_url
+        self.rpc_url = rpc_url.rstrip("/")
         self.username = username
         self.password = password
         self.supported_extensions = supported_extensions
         self.path_mappings = path_mappings or {}
         self.session = requests.Session()  # 使用 Session 管理 Cookie
-        self._processed_torrents = set()  # 存储已处理的种子哈希，避免重复处理
-        self._processed_files = set()  # 存储已处理的文件路径，避免重复回调同一文件
-        self._upload_completed_files = set()  # 存储真正上传完成的文件路径，用于判定是否可删种子
-    
+        # 本地路径 -> (种子哈希, 文件索引, qB 原始路径)，只记录来源。
+        self._file_sources = {}
+        self._stop_event = threading.Event()
+        self.app_version = None
+        self.running = False
+        self.monitor_thread = None
+        self._upload_completed_files = (
+            set()
+        )  # 存储真正上传完成的文件路径，用于判定是否可删种子
+
     def _apply_path_mapping(self, file_path: str) -> str:
-        """
-        应用路径映射，将 qBittorrent 返回的路径转换为本地实际路径
-        
-        Args:
-            file_path: qBittorrent 返回的原始路径
-            
-        Returns:
-            str: 映射后的本地路径
-        """
-        if not self.path_mappings:
-            return file_path
-        
-        # 标准化路径进行比较
-        normalized_path = file_path.replace("\\", "/")
-        
-        # 查找最长的匹配前缀
-        longest_match = ""
-        for prefix in self.path_mappings.keys():
-            norm_prefix = prefix.replace("\\", "/")
-            if normalized_path.startswith(norm_prefix):
-                if len(norm_prefix) > len(longest_match):
-                    longest_match = norm_prefix
-        
-        if longest_match:
-            # 找到原始前缀（保留原始大小写）
-            original_prefix = longest_match
-            for prefix in self.path_mappings.keys():
-                if prefix.replace("\\", "/") == longest_match:
-                    original_prefix = prefix
-                    break
-            
-            mapped_path = normalized_path.replace(
-                longest_match, 
-                self.path_mappings[original_prefix].replace("\\", "/"), 
-                1
-            )
-            # 标准化路径分隔符
-            return os.path.normpath(mapped_path)
-        
-        return file_path
+        """只匹配完整目录前缀，选择最长规则，保留文件名大小写和百分号。"""
+        normalized = file_path.replace("\\", "/")
+        for prefix in sorted(self.path_mappings, key=len, reverse=True):
+            source = prefix.replace("\\", "/").rstrip("/")
+            if normalized == source or normalized.startswith(source + "/"):
+                relative = normalized[len(source) :].lstrip("/")
+                return str(Path(self.path_mappings[prefix]) / relative)
+        return str(Path(normalized))
 
     def start(self):
-        """
-        Start monitoring qBittorrent for completed downloads.
-        """
-        # 尝试登录
-        if not self._login():
-            logger.error("Failed to login to qBittorrent, cannot start monitor")
+        """连接暂不可用也启动轮询，让下载器恢复后可以自动继续。"""
+        if self.running:
             return
-
         self.running = True
+        self._stop_event.clear()
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
-        logger.info(f"Started qBittorrent monitor with RPC URL: {self.rpc_url}")
+        logger.info("Started qBittorrent monitor: %s", self.rpc_url)
 
     def stop(self):
-        """
-        Stop monitoring qBittorrent.
-        """
         self.running = False
+        self._stop_event.set()
         if self.monitor_thread:
             self.monitor_thread.join()
         logger.info("Stopped qBittorrent monitor")
@@ -127,7 +99,15 @@ class QBittorrentMonitor(DownloaderMonitor):
             # 尝试获取应用版本信息
             url = f"{self.rpc_url}/app/version"
             response = self.session.get(url, timeout=30)
-            return response.status_code == 200
+            if response.status_code != 200:
+                return False
+            version = response.text.strip()
+            if version != self.app_version:
+                self.app_version = version
+                logger.info(
+                    "qBittorrent 版本: %s（兼容 pausedUP / stoppedUP）", version
+                )
+            return True
         except Exception as e:
             logger.error(f"Failed to connect to qBittorrent: {e}")
             return False
@@ -397,121 +377,128 @@ class QBittorrentMonitor(DownloaderMonitor):
             logger.error(f"暂停种子时发生错误: {e}")
             return False
 
-    def _monitor_loop(self):
-        """
-        Main monitoring loop for qBittorrent.
-        """
-        while self.running:
+    @classmethod
+    def _torrent_ready(cls, torrent):
+        """先看原生状态，再核对所选内容的总进度，tracker 状态不参与。"""
+        return (
+            torrent.get("state") in cls.READY_STATES
+            and torrent.get("progress") == 1
+            and torrent.get("amount_left") == 0
+        )
+
+    def _ready_file_path(self, torrent, file, local_path=None):
+        """原生文件进度 + 最终路径可读；未重命名或未移动完成就留待下轮。"""
+        name = file.get("name", "")
+        if (
+            not isinstance(name, str)
+            or Path(name).suffix.lower() not in self.supported_extensions
+            or file.get("priority", 0) <= 0
+            or file.get("progress") != 1
+            or not torrent.get("save_path")
+        ):
+            return None
+        # API 的 name 是逻辑文件名，不能 URL 解码，也不能自行剥离 .!qB。
+        path = Path(
+            local_path or self._apply_path_mapping(self._source_path(torrent, file))
+        )
+        size = file.get("size")
+        if not isinstance(size, int) or size <= 0:
+            return None
+        try:
+            with path.open("rb") as stream:
+                if not path.is_file() or os.fstat(stream.fileno()).st_size != size:
+                    return None
+                stream.seek(-1, os.SEEK_END)
+                if not stream.read(1):
+                    return None
+        except OSError:
+            return None
+        return str(path)
+
+    @staticmethod
+    def _source_path(torrent, file):
+        return str(
+            Path(torrent["save_path"].replace("\\", "/"))
+            / file["name"].replace("\\", "/")
+        )
+
+    def is_file_ready(self, file_path):
+        """出队时再次查询 qB，防止排队期间进入校验、移动或丢失文件状态。"""
+        source = self._file_sources.get(file_path)
+        if source is None:
+            return False
+        torrent_hash, index, raw_path = source
+        try:
+            response = self.session.get(
+                f"{self.rpc_url}/torrents/info",
+                params={"hashes": torrent_hash},
+                timeout=30,
+            )
+            response.raise_for_status()
+            torrents = response.json()
+            torrent = next((t for t in torrents if t.get("hash") == torrent_hash), None)
+            if not torrent or not self._torrent_ready(torrent):
+                return False
+            for file in self._get_torrent_files(torrent_hash):
+                if file.get("index") == index:
+                    # 队列保留接收时的本地映射；热更新不能对旧队列再次映射。
+                    return (
+                        self._source_path(torrent, file) == raw_path
+                        and self._ready_file_path(torrent, file, local_path=file_path)
+                        == file_path
+                    )
+        except Exception as exc:
+            logger.warning("qB 文件就绪检查失败，等待重试: %s", exc)
+        return False
+
+    def _poll_once(self):
+        """每轮检查所有已完成任务；去重和最终成功由持久任务记录决定。"""
+        for torrent in self._get_completed_torrents():
+            if self._stop_event.is_set():
+                break
+            if not self._torrent_ready(torrent):
+                continue
+            torrent_hash = torrent.get("hash")
+            if not torrent_hash:
+                continue
             try:
-                logger.debug("qBittorrent monitor loop iteration started")
-                
-                # 检查会话是否有效，如果无效则重新登录
-                if not self.is_connected():
-                    logger.info("qBittorrent session invalid, attempting to re-login")
-                    if not self._login():
-                        logger.warning("qBittorrent re-login failed, will retry in 10s")
-                        time.sleep(10)
+                files = self._get_torrent_files(torrent_hash)
+            except Exception as exc:
+                logger.warning("qB 种子 %s 扫描失败，等待重试: %s", torrent_hash, exc)
+                continue
+            for file in files:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    file_path = self._ready_file_path(torrent, file)
+                    if file_path is None or not isinstance(file.get("index"), int):
                         continue
-                    logger.info("qBittorrent re-login successful")
+                    self._file_sources[file_path] = (
+                        torrent_hash,
+                        file["index"],
+                        self._source_path(torrent, file),
+                    )
+                    # 必须明确返回 True 才表示已经接收；绝不永久屏蔽整个种子。
+                    if self.callback(file_path, downloader_monitor=self) is not True:
+                        logger.debug("qB 文件尚未接收，下轮继续检查: %s", file_path)
+                except Exception as exc:
+                    # 单文件接收失败不阻塞同种子的其他文件。
+                    logger.warning(
+                        "qB 种子 %s 文件接收失败，等待重试: %s", torrent_hash, exc
+                    )
 
-                # 获取所有已完成的种子
-                all_completed_torrents = self._get_completed_torrents()
-                logger.debug(f"qBittorrent: Got {len(all_completed_torrents)} total torrents")
-
-                for torrent in all_completed_torrents:
-                    torrent_hash = torrent["hash"]
-                    torrent_name = torrent.get("name", "unknown")
-                    torrent_progress = torrent.get("progress", 0)
-
-                    # 1. 核心改进：跳过已处理完毕的种子，极大提升大种子库处理性能
-                    if torrent_hash in self._processed_torrents:
-                        logger.debug(f"Skip already processed torrent: {torrent_name}")
-                        continue
-
-                    # 2. 核心改进：通过进度判断是否完成，比 filter 更稳健
-                    if torrent_progress < 1:
-                        logger.debug(f"Skip incomplete torrent: {torrent_name} (progress: {torrent_progress:.2%})")
-                        continue
-
-                    logger.info(f"Processing completed torrent: {torrent_name} ({torrent_hash})")
-
-                    # 检查种子的保存路径
-                    save_path = torrent.get("save_path", "")
-                    if not save_path:
-                        logger.error(
-                            f"Failed to get save path for torrent: {torrent_hash}"
-                        )
-                        continue
-
-                    # 获取种子中的文件
-                    files = self._get_torrent_files(torrent_hash)
-                    logger.debug(f"Torrent {torrent_name} has {len(files)} files")
-
-                    # 记录种子是否完全处理完毕
-                    torrent_fully_processed = True
-
-                    for file in files:
-                        file_name = file["name"]
-                        if file_name.lower().endswith(self.supported_extensions):
-                            # 构建完整的文件路径
-                            raw_file_path = str(Path(os.path.join(save_path, file_name)))
-                            
-                            # 解码 URL 编码的文件名
-                            decoded_path = decode_file_path(raw_file_path)
-                            
-                            # 应用路径映射
-                            file_path = self._apply_path_mapping(decoded_path)
-
-                            # 3. 核心改进：使用标准化路径进行“已处理”检测
-                            file_path_norm = os.path.normpath(file_path).lower()
-                            if any(
-                                os.path.normpath(f).lower() == file_path_norm
-                                for f in self._processed_files
-                            ):
-                                continue
-
-                            # Path decoding and mapping already done above
-                            logger.info(
-                                f"qBittorrent: Detected completed video file: {file_path}"
-                            )
-                            # 调用回调处理文件
-                            try:
-                                # 回调返回 True 表示成功处理，False 表示跳过（需要重试）
-                                result = self.callback(file_path, downloader_monitor=self)
-                                if result is not False:  # None 或 True 都视为成功
-                                    self._processed_files.add(file_path)
-                                    logger.debug(
-                                        f"qBittorrent: Marked file as processed: {file_path}"
-                                    )
-                                else:
-                                    logger.info(
-                                        f"qBittorrent: File not processed (will retry): {file_path}"
-                                    )
-                                    torrent_fully_processed = False
-                            except Exception as e:
-                                logger.error(
-                                    f"qBittorrent: Failed to process file {file_path}: {e}"
-                                )
-                                torrent_fully_processed = False
-                        else:
-                            # 非视频文件不计入处理依赖，但有些种子可能只有非视频文件
-                            pass
-
-                    # 如果种子中所有视频文件都已处理，且该种子之前未被标记，则标记种子为已处理
-                    if (
-                        torrent_fully_processed
-                        and torrent_hash not in self._processed_torrents
-                    ):
-                        self._processed_torrents.add(torrent_hash)
-                        logger.info(
-                            f"Marked torrent as fully processed: {torrent_hash}"
-                        )
-
-                # 等待一段时间后再次检查
-                time.sleep(5)
-            except Exception as e:
-                logger.error(f"Error in qBittorrent monitor loop: {e}")
-                time.sleep(10)  # 发生错误时，延长等待时间
+    def _monitor_loop(self):
+        while self.running:
+            interval = 5
+            try:
+                if not self.is_connected() and not self._login():
+                    interval = 10
+                else:
+                    self._poll_once()
+            except Exception as exc:
+                logger.error("qBittorrent 轮询失败，稍后重试: %s", exc)
+                interval = 10
+            self._stop_event.wait(interval)
 
     def _login(self) -> bool:
         """
@@ -528,7 +515,7 @@ class QBittorrentMonitor(DownloaderMonitor):
             response = self.session.post(url, data=data, timeout=30)
             if response.status_code == 200 and response.text == "Ok.":
                 # Session 会自动保存 Cookie
-                logger.info(f"Login successful, cookies: {dict(self.session.cookies)}")
+                logger.info("qBittorrent 登录成功")
                 return True
             logger.error(
                 f"Login failed with status {response.status_code}: {response.text}"
@@ -551,11 +538,15 @@ class QBittorrentMonitor(DownloaderMonitor):
         max_retries = 3
         for i in range(max_retries):
             try:
-                logger.debug(f"Requesting qBittorrent torrents/info (attempt {i+1}/{max_retries})")
+                logger.debug(
+                    f"Requesting qBittorrent torrents/info (attempt {i+1}/{max_retries})"
+                )
                 response = self.session.get(url, params=params, timeout=30)
                 logger.debug(f"qBittorrent response status: {response.status_code}")
                 if response.status_code != 200:
-                    logger.warning(f"qBittorrent returned non-200 status: {response.status_code}, body: {response.text[:200]}")
+                    logger.warning(
+                        f"qBittorrent returned non-200 status: {response.status_code}, body: {response.text[:200]}"
+                    )
                 response.raise_for_status()
                 result = response.json()
                 logger.debug(f"qBittorrent returned {len(result)} torrents")
@@ -589,5 +580,3 @@ class QBittorrentMonitor(DownloaderMonitor):
         except Exception as e:
             logger.error(f"Failed to get files for torrent {torrent_hash}: {e}")
             raise
-
-

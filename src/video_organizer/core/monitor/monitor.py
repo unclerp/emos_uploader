@@ -121,6 +121,11 @@ class FileSystemMonitor:
                 self.supported_extensions
             )
 
+            if downloader_type == "qbittorrent" and not config.get("path_mappings"):
+                config_with_extensions["path_mappings"] = self.config.get(
+                    "monitoring", {}
+                ).get("path_mappings", {})
+
             monitor = DownloaderMonitorFactory.create_monitor(
                 downloader_type, self._on_download_completed, config_with_extensions
             )
@@ -215,6 +220,12 @@ class FileSystemMonitor:
         Returns:
             bool: True 或 None 表示成功处理，False 表示需要重试
         """
+        if getattr(downloader_monitor, "requires_native_readiness", False) is True:
+            # qB 已解析成最终本地路径，不再解码、二次映射或启动中间线程。
+            if Path(file_path).name.lower().startswith("sample"):
+                return True
+            return self.event_handler.enqueue_qb_file(file_path, downloader_monitor)
+
         logger.info(f"Received download completion event for: {file_path}")
 
         # 解码 URL 编码的文件路径
@@ -346,6 +357,7 @@ class FileSystemMonitor:
             if previous:
                 # 同一下载器的种子可能跨配置版本完成，完成记录必须共享。
                 for name in (
+                    "_file_sources",
                     "_processed_files",
                     "_processed_torrents",
                     "_processed_downloads",
@@ -1021,6 +1033,11 @@ class FileSystemMonitor:
                 if self._pending_files:
                     pending_files = list(self._pending_files)
                     for file_path in pending_files:
+                        if getattr(
+                            self.event_handler._file_downloader_map.get(file_path),
+                            "requires_native_readiness", False
+                        ) is True:
+                            continue
                         try:
                             if not os.path.exists(file_path):
                                 logger.debug(f"重试: 文件不存在，从队列移除: {file_path}")
@@ -1044,6 +1061,11 @@ class FileSystemMonitor:
                 if self._retry_files:
                     retry_files = list(self._retry_files)
                     for file_path in retry_files:
+                        if getattr(
+                            self.event_handler._file_downloader_map.get(file_path),
+                            "requires_native_readiness", False
+                        ) is True:
+                            continue
                         try:
                             if not os.path.exists(file_path):
                                 logger.debug(f"重试: 文件不存在，从队列移除: {file_path}")

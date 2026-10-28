@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from .models import Base
@@ -47,6 +47,16 @@ def init_db(db_path: str = None) -> str:
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
     Base.metadata.create_all(bind=_engine)
+    # 已有 SQLite 表不会由 create_all 自动补列；保留所有原记录并幂等升级。
+    if "auto_retry" not in {
+        c["name"] for c in inspect(_engine).get_columns("upload_task")
+    }:
+        with _engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE upload_task ADD COLUMN auto_retry BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
     from .task_tracking import migrate_history, recover_interrupted
 
     with _SessionLocal() as db:

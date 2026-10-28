@@ -139,6 +139,7 @@ class UploadTask(Base):
     )
     cleared: Mapped[bool] = mapped_column(Boolean, default=False)
     tmdb_override: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    auto_retry: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
 
 class UploadAttempt(Base):

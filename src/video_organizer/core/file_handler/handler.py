@@ -29,7 +29,7 @@ from ...utils.logging_utils import (
     with_file_id,
 )
 from ...database.operations import record_task
-from ...database.task_tracking import prepare_task
+from ...database.task_tracking import prepare_task, get_file_task
 from ...database.session import init_db as init_task_db
 
 # 获取模块级别的 logger
@@ -704,6 +704,22 @@ class VideoFileHandler:
                     self.logger.error(
                         f"工作线程 #{worker_id} 处理文件失败: {file_path}, 错误: {e}"
                     )
+                    task_id = (
+                        queued_item[2]
+                        if isinstance(queued_item, tuple) and len(queued_item) > 2
+                        else None
+                    )
+                    record_task(
+                        file_path,
+                        "failed",
+                        task_id=task_id,
+                        targets=",".join(sorted(self.upload_targets)),
+                        error_message=f"工作线程异常: {e}",
+                        auto_retry=True,
+                        end_time=datetime.now(),
+                    )
+                    if self._parent_monitor:
+                        self._parent_monitor._retry_files.add(file_path)
                 finally:
                     # 清理状态（不持有锁，避免阻塞其他线程）
                     clear_file_id()
@@ -845,6 +861,54 @@ class VideoFileHandler:
             # 无论上传结果如何，从上传中集合移除
             self._uploading_files.remove(file_path)
 
+    def enqueue_qb_file(self, file_path, downloader):
+        """qB 回调同步完成接收，以实际队列和持久任务状态去重。"""
+        with self._queue_lock:
+            if (
+                file_path in self._queued_files
+                or file_path in self._processing_files
+                or file_path in self._uploading_files
+            ):
+                return True
+            task = get_file_task(file_path, self.upload_targets)
+            if task and task["status"] == "completed":
+                return True
+            if task and task["status"] == "failed":
+                interrupted = task["error"] == "服务重启，前次处理未完成，请重试"
+                retry = task["auto_retry"] or (
+                    self._parent_monitor
+                    and file_path in self._parent_monitor._retry_files
+                )
+                if not interrupted and not retry:
+                    # 识别不匹配等错误继续留给手动处理，不能每轮重跑。
+                    return False
+                if (
+                    retry
+                    and not interrupted
+                    and task["updated_at"]
+                    and (datetime.now() - task["updated_at"]).total_seconds() < 60
+                ):
+                    return False
+            if not self._use_queue:
+                raise RuntimeError("qB 自动监控需要启用上传队列")
+            task_id = prepare_task(file_path, self.upload_targets, status="queued")
+            self._file_downloader_map[file_path] = downloader
+            self._queued_files.add(file_path)
+            self._processing_files.add(file_path)
+            try:
+                self._upload_queue.put_nowait((file_path, None, task_id))
+            except Exception:
+                self._queued_files.discard(file_path)
+                self._processing_files.discard(file_path)
+                # 持久状态保持 queued；下一轮可接续，不写伪造的上传结果。
+                raise
+            self._uploaded_files.discard(file_path)
+            self._failed_files.pop(file_path, None)
+            if self._parent_monitor:
+                self._parent_monitor._retry_files.discard(file_path)
+                self._parent_monitor._pending_files.discard(file_path)
+            return True
+
     def _process_file(self, file_path: str) -> bool:
         """
         处理视频或字幕文件
@@ -921,6 +985,13 @@ class VideoFileHandler:
     def _process_file_internal(
         self, file_path, worker_id=0, tmdb_override=None, tracking_task_id=None
     ):
+        downloader = getattr(self, "_file_downloader_map", {}).get(file_path)
+        if getattr(
+            downloader, "requires_native_readiness", False
+        ) is True and not downloader.is_file_ready(file_path):
+            # 留在持久的 queued 状态；worker 清理内存占位后，qB 后续轮询重新接收。
+            self.logger.info("qB 文件暂未就绪，等待重新入队: %s", file_path)
+            return False
         manager = self._runtime_manager
         import copy
 
@@ -1038,6 +1109,7 @@ class VideoFileHandler:
                         file_path,
                         "failed",
                         error_message=reason,
+                        auto_retry=True,
                         end_time=datetime.now(),
                     )
                     if self._parent_monitor:
@@ -1332,6 +1404,7 @@ class VideoFileHandler:
                 file_path,
                 "failed",
                 error_message=f"API请求失败: {str(e)}",
+                auto_retry=not bool(getattr(self, "_manual_tmdb_override", None)),
                 end_time=datetime.now(),
             )
 
@@ -1884,6 +1957,7 @@ class VideoFileHandler:
                     file_path,
                     "failed",
                     error_message=f"部分云盘上传失败: {', '.join(failed_targets)}",
+                    auto_retry=True,
                     end_time=datetime.now(),
                 )
                 # 加入重试队列，自动重试
@@ -1912,6 +1986,7 @@ class VideoFileHandler:
                 file_path,
                 "failed",
                 error_message=f"上传异常: {str(e)}",
+                auto_retry=True,
                 end_time=datetime.now(),
             )
             # 加入重试队列，自动重试

@@ -24,9 +24,10 @@ def _identity(path, targets):
     return str(path), target, fingerprint, key
 
 
-def _append(db, task, history):
+def _append(db, task, history, auto_retry=False):
     db.flush()
     db.add(UploadAttempt(task_id=task.id, history_id=history.id))
+    task.auto_retry = history.status == "failed" and auto_retry
     task.status = history.status
     task.error_message = history.error_message
     task.updated_at = history.end_time or history.start_time or datetime.now()
@@ -88,7 +89,20 @@ def prepare_task(path, targets, task_id=None, status="processing", tmdb_override
         return task.id
 
 
-def append_result(db, history, task_id=None, targets="unknown"):
+def get_file_task(path, targets):
+    """查询同一文件版本和目标的任务，供下载器重扫和重启去重使用。"""
+    _, _, _, key = _identity(path, targets)
+    with lock, get_session_local()() as db:
+        task = db.query(UploadTask).filter_by(identity=key).first()
+        if task is None:
+            return None
+        result = serialize(task)
+        result["updated_at"] = task.updated_at
+        result["auto_retry"] = task.auto_retry
+        return result
+
+
+def append_result(db, history, task_id=None, targets="unknown", auto_retry=False):
     task = db.get(UploadTask, task_id) if task_id else None
     if task is None:
         try:
@@ -103,7 +117,7 @@ def append_result(db, history, task_id=None, targets="unknown"):
             )
             db.add(task)
             db.flush()
-    _append(db, task, history)
+    _append(db, task, history, auto_retry=auto_retry)
 
 
 def serialize(task):
@@ -184,7 +198,7 @@ def recover_interrupted(db):
             end_time=datetime.now(),
         )
         db.add(history)
-        _append(db, task, history)
+        _append(db, task, history, auto_retry=True)
     db.commit()
 
 

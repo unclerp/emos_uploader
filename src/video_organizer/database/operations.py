@@ -16,6 +16,7 @@ def record_task(
     end_time: Optional[datetime] = None,
     task_id: Optional[int] = None,
     targets: str = "unknown",
+    auto_retry: bool = False,
 ) -> bool:
     """
     记录任务完成或失败到数据库
@@ -40,7 +41,7 @@ def record_task(
                 end_time=end_time,
             )
             db.add(record)
-            append_result(db, record, task_id, targets)
+            append_result(db, record, task_id, targets, auto_retry=auto_retry)
             db.commit()
         # 通知仪表盘更新（惰性导入避免循环依赖）
         try:
