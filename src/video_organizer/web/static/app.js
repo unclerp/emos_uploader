@@ -1358,8 +1358,16 @@ function editDownloaderConfig(data) {
         if (rpc) { values.rpc_url = rpc; }
         else if (host && port) { values.rpc_url = `http://${host}:${port}${RPC_PATHS[newType] || ''}`; }
         try {
-            await saveConfigToApi('downloader.' + newType, values);
-            if (newType !== type) await deleteConfigSectionApi(section);
+            let result = await saveConfigToApi('downloader.' + newType, values);
+            // 新增没有旧配置节；只有编辑并成功应用新类型时才移除旧节。
+            if (result.applied !== false && section && newType !== type) {
+                result = await deleteConfigSectionApi(section);
+            }
+            if (result.applied === false) {
+                showToast(result.message || '配置已保存，但应用失败，请检查连接配置', 'error');
+                await loadDownloaderConfigs();
+                return;
+            }
             showToast('下载器配置已保存', 'success');
             hideModal();
             await loadDownloaderConfigs();
