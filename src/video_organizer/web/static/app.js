@@ -709,7 +709,7 @@ function renderConfigField(section, key, value) {
     let inputHtml;
     if (section === 'processing' && key === 'post_upload_action') {
         const action = value || (state.config.processing.delete_after_upload ? 'delete' : 'keep');
-        inputHtml = `<select id="${inputId}" name="${inputName}">
+        inputHtml = `<select class="form-select" id="${inputId}" name="${inputName}">
             ${[['keep','保留原文件'],['move','通过 qB 移动'],['delete','删除任务及文件']].map(([v,label]) => `<option value="${v}" ${action === v ? 'selected' : ''}>${label}</option>`).join('')}
         </select><small>新接收的 qB 任务使用此设置；同种子全部已选视频上传完成（含重复跳过）后才操作。目录监控和手动处理不执行 qB 移动。</small>`;
     } else if (section === 'processing' && key === 'post_upload_move_path') {
