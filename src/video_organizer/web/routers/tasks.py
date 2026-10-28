@@ -28,17 +28,20 @@ router = APIRouter()
 
 class TaskStatusResponse(BaseModel):
     """任务状态响应"""
+
     queue_size: int
     processing_count: int
     uploading_count: int
     completed_count: int
     failed_count: int
+    resolved_count: int = 0
     is_running: bool
     last_update: Optional[str] = None
 
 
 class TaskListResponse(BaseModel):
     """任务列表响应"""
+
     success: bool
     count: int
     files: List[str]
@@ -46,12 +49,14 @@ class TaskListResponse(BaseModel):
 
 class CompletedTaskItem(BaseModel):
     """已完成任务项"""
+
     path: str
     time: Optional[str] = None
 
 
 class CompletedTaskListResponse(BaseModel):
     """已完成任务列表响应"""
+
     success: bool
     count: int
     files: List[CompletedTaskItem]
@@ -59,12 +64,14 @@ class CompletedTaskListResponse(BaseModel):
 
 class FailedTaskItem(BaseModel):
     """失败任务项"""
+
     error: str
     time: Optional[str] = None
 
 
 class FailedTaskListResponse(BaseModel):
     """失败任务列表响应"""
+
     success: bool
     count: int
     files: Dict[str, FailedTaskItem]  # path -> {error, time}
@@ -72,15 +79,21 @@ class FailedTaskListResponse(BaseModel):
 
 class RecentActivityItem(BaseModel):
     """最近活动项"""
+
     id: Optional[int] = None
     path: str
     status: str
     error: Optional[str] = None
     time: Optional[str] = None
+    resolved: bool = False
+    targets: str = "unknown"
+    attempt_count: int = 0
+    failure_count: int = 0
 
 
 class RecentActivityResponse(BaseModel):
     """最近活动响应"""
+
     success: bool
     items: List[RecentActivityItem]
     total: int = 0
@@ -90,15 +103,21 @@ class RecentActivityResponse(BaseModel):
 
 class TaskListItem(BaseModel):
     """任务列表项"""
+
     id: int
     path: str
     status: str
     error: Optional[str] = None
     time: Optional[str] = None
+    resolved: bool = False
+    targets: str = "unknown"
+    attempt_count: int = 0
+    failure_count: int = 0
 
 
 class TaskListPaginatedResponse(BaseModel):
     """分页任务列表响应"""
+
     success: bool
     items: List[TaskListItem]
     total: int
@@ -108,11 +127,14 @@ class TaskListPaginatedResponse(BaseModel):
 
 class RetryRequest(BaseModel):
     """重试请求"""
+
     file_path: str
+    task_id: Optional[int] = None
 
 
 class UploadProgressResponse(BaseModel):
     """上传进度响应"""
+
     filename: str
     uploader: str
     progress: float
@@ -125,6 +147,7 @@ class UploadProgressResponse(BaseModel):
 
 class AllProgressResponse(BaseModel):
     """所有上传进度响应"""
+
     success: bool
     count: int
     progress: Dict[str, UploadProgressResponse]
@@ -134,19 +157,20 @@ class AllProgressResponse(BaseModel):
 async def get_task_status():
     """
     获取任务状态概览
-    
+
     返回队列大小、处理中、上传中、已完成、失败的任务数量。
     """
     try:
         state = get_state_manager()
         status = state.get_system_status()
-        
+
         return TaskStatusResponse(
             queue_size=status.queue_size,
             processing_count=status.processing_count,
             uploading_count=status.uploading_count,
             completed_count=status.completed_count,
             failed_count=status.failed_count,
+            resolved_count=status.resolved_count,
             is_running=status.is_running,
             last_update=status.last_update.isoformat() if status.last_update else None,
         )
@@ -159,13 +183,13 @@ async def get_task_status():
 async def get_queued_tasks():
     """
     获取队列中的任务
-    
+
     返回等待处理的文件列表。
     """
     try:
         state = get_state_manager()
         files = state.get_queued_files()
-        
+
         return TaskListResponse(
             success=True,
             count=len(files),
@@ -180,13 +204,13 @@ async def get_queued_tasks():
 async def get_processing_tasks():
     """
     获取正在处理的任务
-    
+
     返回当前正在处理的文件列表。
     """
     try:
         state = get_state_manager()
         files = state.get_processing_files()
-        
+
         return TaskListResponse(
             success=True,
             count=len(files),
@@ -201,13 +225,13 @@ async def get_processing_tasks():
 async def get_uploading_tasks():
     """
     获取正在上传的任务
-    
+
     返回当前正在上传的文件列表。
     """
     try:
         state = get_state_manager()
         files = state.get_uploading_files()
-        
+
         return TaskListResponse(
             success=True,
             count=len(files),
@@ -222,13 +246,13 @@ async def get_uploading_tasks():
 async def get_completed_tasks():
     """
     获取已完成的任务
-    
+
     返回已成功处理的文件及其完成时间。
     """
     try:
         state = get_state_manager()
         files = state.get_completed_with_time()
-        
+
         return CompletedTaskListResponse(
             success=True,
             count=len(files),
@@ -243,13 +267,13 @@ async def get_completed_tasks():
 async def get_failed_tasks():
     """
     获取失败的任务
-    
+
     返回处理失败的文件、错误信息及其时间。
     """
     try:
         state = get_state_manager()
         files = state.get_failed_with_time()
-        
+
         return FailedTaskListResponse(
             success=True,
             count=len(files),
@@ -268,7 +292,7 @@ async def get_recent_activity(
 ):
     """
     获取最近活动（分页）
-    
+
     返回最近的已完成和失败任务（含时间戳），用于仪表盘展示。
     """
     try:
@@ -323,13 +347,13 @@ async def get_task_list(
 async def get_upload_progress():
     """
     获取所有上传进度
-    
+
     返回当前正在上传的文件进度。
     """
     try:
         state = get_state_manager()
         all_progress = state.get_all_upload_progress()
-        
+
         progress_dict = {}
         for file_path, prog in all_progress.items():
             progress_dict[file_path] = UploadProgressResponse(
@@ -342,7 +366,7 @@ async def get_upload_progress():
                 status=prog.status,
                 error=prog.error,
             )
-        
+
         return AllProgressResponse(
             success=True,
             count=len(progress_dict),
@@ -357,34 +381,36 @@ async def get_upload_progress():
 async def websocket_progress(websocket: WebSocket):
     """
     WebSocket 实时上传进度流
-    
+
     通过 WebSocket 实时推送上传进度更新。
     """
     await websocket.accept()
-    
+
     state = get_state_manager()
     progress_queue = []
     queue_lock = threading.Lock()
-    
+
     def on_progress(progress):
         """进度更新回调"""
         with queue_lock:
-            progress_queue.append({
-                "type": "progress",
-                "file_path": progress.file_path,
-                "filename": progress.filename,
-                "uploader": progress.uploader,
-                "progress": progress.progress,
-                "uploaded_bytes": progress.uploaded_bytes,
-                "total_bytes": progress.total_bytes,
-                "speed": progress.speed,
-                "status": progress.status,
-                "error": progress.error,
-            })
-    
+            progress_queue.append(
+                {
+                    "type": "progress",
+                    "file_path": progress.file_path,
+                    "filename": progress.filename,
+                    "uploader": progress.uploader,
+                    "progress": progress.progress,
+                    "uploaded_bytes": progress.uploaded_bytes,
+                    "total_bytes": progress.total_bytes,
+                    "speed": progress.speed,
+                    "status": progress.status,
+                    "error": progress.error,
+                }
+            )
+
     # 注册回调
     state.register_progress_callback(on_progress)
-    
+
     try:
         while True:
             # 发送队列中的进度更新
@@ -393,13 +419,13 @@ async def websocket_progress(websocket: WebSocket):
                     for msg in progress_queue:
                         await websocket.send_json(msg)
                     progress_queue.clear()
-            
+
             # 发送心跳（5秒间隔）
             await websocket.send_json({"type": "heartbeat"})
-            
+
             # 等待
             await asyncio.sleep(5)
-            
+
     except WebSocketDisconnect:
         logger.debug("进度 WebSocket 连接已断开")
     except Exception as e:
@@ -439,20 +465,23 @@ async def websocket_dashboard(websocket: WebSocket):
         try:
             status = state.get_system_status()
             items, total = get_recent_activity_paginated(page=1, page_size=20)
-            await websocket.send_json({
-                "type": "snapshot",
-                "stats": {
-                    "queue": status.queue_size,
-                    "processing": status.processing_count,
-                    "uploading": status.uploading_count,
-                    "completed": status.completed_count,
-                    "failed": status.failed_count,
-                },
-                "recent": {
-                    "items": items,
-                    "total": total,
+            await websocket.send_json(
+                {
+                    "type": "snapshot",
+                    "stats": {
+                        "queue": status.queue_size,
+                        "processing": status.processing_count,
+                        "uploading": status.uploading_count,
+                        "completed": status.completed_count,
+                        "failed": status.failed_count,
+                        "resolved": status.resolved_count,
+                    },
+                    "recent": {
+                        "items": items,
+                        "total": total,
+                    },
                 }
-            })
+            )
         except Exception as e:
             logger.warning(f"仪表盘初始快照失败: {e}")
 
@@ -468,20 +497,23 @@ async def websocket_dashboard(websocket: WebSocket):
                 try:
                     status = state.get_system_status()
                     items, total = get_recent_activity_paginated(page=1, page_size=20)
-                    await websocket.send_json({
-                        "type": "update",
-                        "stats": {
-                            "queue": status.queue_size,
-                            "processing": status.processing_count,
-                            "uploading": status.uploading_count,
-                            "completed": status.completed_count,
-                            "failed": status.failed_count,
-                        },
-                        "recent": {
-                            "items": items,
-                            "total": total,
+                    await websocket.send_json(
+                        {
+                            "type": "update",
+                            "stats": {
+                                "queue": status.queue_size,
+                                "processing": status.processing_count,
+                                "uploading": status.uploading_count,
+                                "completed": status.completed_count,
+                                "failed": status.failed_count,
+                                "resolved": status.resolved_count,
+                            },
+                            "recent": {
+                                "items": items,
+                                "total": total,
+                            },
                         }
-                    })
+                    )
                 except Exception as e:
                     logger.warning(f"仪表盘推送更新失败: {e}")
 
@@ -505,31 +537,57 @@ async def websocket_dashboard(websocket: WebSocket):
 async def retry_failed_task(request: RetryRequest):
     """
     重试失败的任务
-    
+
     Args:
         request: 包含 file_path 的请求
     """
     try:
         state = get_state_manager()
         handler = state.get_video_handler()
-        
+
         if handler is None:
             raise HTTPException(status_code=503, detail="系统未就绪")
-        
+
         file_path = request.file_path
-        failed_files = state.get_failed_files()
-        if file_path not in failed_files:
-            raise HTTPException(status_code=404, detail="文件不在失败列表中")
-        
-        # 从失败列表移除
-        if hasattr(handler, "_failed_files") and file_path in handler._failed_files:
-            del handler._failed_files[file_path]
-        
-        # 重新处理
-        handler.force_process_file(file_path)
-        
+        from ...database.task_tracking import get_attempts
+
+        task_id = request.task_id
+        if task_id is None:
+            items, _ = get_tasks_paginated(
+                status="failed", search=file_path, limit=10000
+            )
+            matches = [
+                item
+                for item in items
+                if item["path"] == file_path and item["status"] == "failed"
+            ]
+            if len(matches) != 1:
+                raise HTTPException(
+                    status_code=409, detail="请在任务列表选择具体的失败任务"
+                )
+            task_id = matches[0]["id"]
+        detail = get_attempts(task_id)
+        if (
+            not detail
+            or detail["task"]["path"] != file_path
+            or detail["task"]["status"] != "failed"
+        ):
+            raise HTTPException(status_code=409, detail="任务不处于可重试的失败状态")
+        try:
+            accepted = handler.force_process_file(
+                file_path,
+                tmdb_override=detail["tmdb_override"],
+                tracking_task_id=task_id,
+            )
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not accepted:
+            raise HTTPException(
+                status_code=409, detail="文件不存在或任务正在处理中，未加入重试队列"
+            )
+
         logger.info(f"已重试任务: {file_path}")
-        
+
         return {"success": True, "message": f"已重试任务: {file_path}"}
     except HTTPException:
         raise
@@ -546,28 +604,37 @@ async def retry_all_failed_tasks():
     try:
         state = get_state_manager()
         handler = state.get_video_handler()
-        
+
         if handler is None:
             raise HTTPException(status_code=503, detail="系统未就绪")
-        
-        failed_files = state.get_failed_files()
+
+        items, _ = get_tasks_paginated(status="failed", limit=100000)
         retried_count = 0
-        
-        for file_path in list(failed_files.keys()):
-            # 从失败列表移除
-            if hasattr(handler, "_failed_files") and file_path in handler._failed_files:
-                del handler._failed_files[file_path]
-            
-            # 重新处理
-            handler.force_process_file(file_path)
-            retried_count += 1
-        
+        skipped = 0
+        for item in items:
+            if item["status"] != "failed":
+                continue
+            from ...database.task_tracking import get_attempts
+
+            detail = get_attempts(item["id"])
+            try:
+                accepted = handler.force_process_file(
+                    item["path"],
+                    tmdb_override=detail["tmdb_override"],
+                    tracking_task_id=item["id"],
+                )
+                retried_count += bool(accepted)
+                skipped += not accepted
+            except (ValueError, OSError):
+                skipped += 1
+
         logger.info(f"已重试 {retried_count} 个失败任务")
-        
+
         return {
             "success": True,
             "message": f"已重试 {retried_count} 个失败任务",
             "retried_count": retried_count,
+            "skipped_count": skipped,
         }
     except HTTPException:
         raise
@@ -577,28 +644,32 @@ async def retry_all_failed_tasks():
 
 
 @router.delete("/failed/{file_path:path}")
-async def clear_failed_task(file_path: str):
+async def clear_failed_task(file_path: str, task_id: Optional[int] = None):
     """
     清除失败任务记录
-    
+
     Args:
         file_path: 失败的文件路径
     """
     try:
         state = get_state_manager()
         handler = state.get_video_handler()
-        
-        if handler is not None and hasattr(handler, "_failed_files") and file_path in handler._failed_files:
+
+        if (
+            handler is not None
+            and hasattr(handler, "_failed_files")
+            and file_path in handler._failed_files
+        ):
             del handler._failed_files[file_path]
-        
-        db_deleted = delete_failed_task(file_path)
-        
+
+        db_deleted = delete_failed_task(file_path, task_id)
+
         if db_deleted:
             logger.info(f"已清除失败任务记录: {file_path}")
             return {"success": True, "message": f"已清除失败任务记录: {file_path}"}
         else:
             raise HTTPException(status_code=404, detail="文件不在失败列表中")
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -614,17 +685,28 @@ async def clear_all_failed_tasks():
     try:
         state = get_state_manager()
         handler = state.get_video_handler()
-        
+
         if handler is not None and hasattr(handler, "_failed_files"):
             handler._failed_files.clear()
-        
+
         db_count = delete_all_failed_tasks()
-        
+
         logger.info(f"已清除 {db_count} 条失败任务记录")
         return {"success": True, "message": f"已清除 {db_count} 条失败任务记录"}
-            
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"清除所有失败任务失败: {e}")
         raise HTTPException(status_code=500, detail=f"清除所有失败任务失败: {e}")
+
+
+@router.get("/history/{task_id}")
+def task_attempt_history(task_id: int):
+    from ...database.task_tracking import get_attempts
+
+    detail = get_attempts(task_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    detail.pop("tmdb_override", None)
+    return {"success": True, **detail}

@@ -23,6 +23,7 @@ from ...database.operations import get_task_counts as db_get_task_counts
 @dataclass
 class TaskInfo:
     """任务信息"""
+
     file_path: str
     status: str  # queued, processing, uploading, completed, failed
     error_message: Optional[str] = None
@@ -33,6 +34,7 @@ class TaskInfo:
 @dataclass
 class UploadProgress:
     """上传进度"""
+
     file_path: str
     filename: str
     uploader: str  # cloud189, yun139, p123, emos
@@ -49,11 +51,13 @@ class UploadProgress:
 @dataclass
 class SystemStatus:
     """系统状态"""
+
     queue_size: int = 0
     processing_count: int = 0
     uploading_count: int = 0
     completed_count: int = 0
     failed_count: int = 0
+    resolved_count: int = 0
     is_running: bool = False
     last_update: Optional[datetime] = None
 
@@ -61,7 +65,7 @@ class SystemStatus:
 class StateManager:
     """
     状态管理器（单例模式）
-    
+
     管理 VideoFileHandler 实例和全局状态，
     为 Web API 提供统一的状态访问接口。
     """
@@ -103,7 +107,9 @@ class StateManager:
         self._max_history: int = 1000
 
         # 上传进度追踪
-        self._upload_progress: Dict[str, UploadProgress] = {}  # file_path -> UploadProgress
+        self._upload_progress: Dict[str, UploadProgress] = (
+            {}
+        )  # file_path -> UploadProgress
         self._progress_callbacks: List[Callable] = []  # 进度更新回调列表
 
         # 仪表盘更新回调
@@ -128,7 +134,9 @@ class StateManager:
             generation = self._live_config.current
         return generation.handler if generation else self._video_handler
 
-    def set_config(self, config: Dict[str, Any], config_path: Optional[Path] = None) -> None:
+    def set_config(
+        self, config: Dict[str, Any], config_path: Optional[Path] = None
+    ) -> None:
         """设置配置"""
         with self._state_lock:
             self._config = copy.deepcopy(config)
@@ -216,7 +224,7 @@ class StateManager:
     def get_tmdb_client(self):
         """
         获取共享 TMDB 客户端（懒初始化单例）。
-        
+
         复用限速预算与请求缓存，避免每个请求新建客户端导致限速计数互不共享。
         无 api_key 或初始化失败时返回 None。
         """
@@ -269,10 +277,10 @@ class StateManager:
     def get_cloud_client(self, provider: str):
         """
         获取云盘客户端实例
-        
+
         Args:
             provider: 云盘类型 ("cloud189" 或 "yun139")
-            
+
         Returns:
             云盘客户端实例，如果不可用则返回 None
         """
@@ -298,11 +306,14 @@ class StateManager:
     def get_system_status(self) -> SystemStatus:
         """获取系统状态"""
         status = SystemStatus(
-            is_running=self._system_running,
-            last_update=datetime.now()
+            is_running=self._system_running, last_update=datetime.now()
         )
 
         if self._video_handler is None:
+            counts = db_get_task_counts()
+            status.completed_count = counts["completed"]
+            status.failed_count = counts["failed"]
+            status.resolved_count = counts["resolved"]
             return status
 
         try:
@@ -319,14 +330,21 @@ class StateManager:
             if hasattr(handler, "_uploading_files"):
                 status.uploading_count = len(handler._uploading_files)
 
-            runtime_completed = len(handler._uploaded_files) if hasattr(handler, "_uploaded_files") else 0
-            runtime_failed = len(handler._failed_files) if hasattr(handler, "_failed_files") else 0
+            runtime_completed = (
+                len(handler._uploaded_files)
+                if hasattr(handler, "_uploaded_files")
+                else 0
+            )
+            runtime_failed = (
+                len(handler._failed_files) if hasattr(handler, "_failed_files") else 0
+            )
 
-            # 从数据库获取持久化计数（重启后不丢失），取与运行时计数的较大值
+            # 从数据库获取汇总计数，避免旧内存失败集合把已解决任务重新计入
             try:
                 db_counts = db_get_task_counts()
-                status.completed_count = max(runtime_completed, db_counts.get("completed", 0))
-                status.failed_count = max(runtime_failed, db_counts.get("failed", 0))
+                status.completed_count = db_counts.get("completed", 0)
+                status.failed_count = db_counts.get("failed", 0)
+                status.resolved_count = db_counts.get("resolved", 0)
             except Exception:
                 status.completed_count = runtime_completed
                 status.failed_count = runtime_failed
@@ -394,22 +412,14 @@ class StateManager:
 
     def get_failed_files(self) -> Dict[str, str]:
         """获取失败的文件及错误信息"""
-        if self._video_handler is None:
-            return {}
-
-        try:
-            handler = self._video_handler
-            if hasattr(handler, "_failed_files"):
-                return dict(handler._failed_files)
-        except Exception as e:
-            self._logger.error(f"获取失败文件失败: {e}")
-
-        return {}
+        return {
+            path: item["error"] for path, item in db_get_failed(limit=10000).items()
+        }
 
     def get_completed_with_time(self) -> List[Dict]:
         """
         获取已完成的文件列表（含时间戳）
-        
+
         合并内存状态和数据库记录，返回带完成时间的列表。
         """
         seen = {}
@@ -436,35 +446,18 @@ class StateManager:
     def get_failed_with_time(self) -> Dict[str, Dict]:
         """
         获取失败的文件列表（含时间戳）
-        
+
         Returns:
             {path: {"error": str, "time": str or None}, ...}
         """
-        result = {}
-        # 数据库记录优先（有时间戳）
-        try:
-            db_items = db_get_failed(limit=500)
-            for key, val in db_items.items():
-                result[key] = val
-        except Exception:
-            pass
-        # 内存状态补充（实时数据/自动重试中的文件）
-        try:
-            if self._video_handler and hasattr(self._video_handler, "_failed_files"):
-                handler_failed = self._video_handler._failed_files
-                for p, err in handler_failed.items():
-                    if p not in result:
-                        result[p] = {"error": err, "time": None}
-        except Exception:
-            pass
-        return dict(list(result.items())[:200])
+        return db_get_failed(limit=200)
 
     def add_task_history(self, task: TaskInfo) -> None:
         """添加任务历史记录"""
         with self._state_lock:
             self._task_history.append(task)
             if len(self._task_history) > self._max_history:
-                self._task_history = self._task_history[-self._max_history:]
+                self._task_history = self._task_history[-self._max_history :]
 
     def get_task_history(self, limit: int = 100) -> List[TaskInfo]:
         """获取任务历史记录"""
@@ -486,7 +479,7 @@ class StateManager:
     def update_upload_progress(self, progress: UploadProgress) -> None:
         """
         更新上传进度
-        
+
         Args:
             progress: 上传进度对象
         """
@@ -549,6 +542,7 @@ def get_state_manager() -> StateManager:
 
 # ========== 全局进度更新函数（供上传器调用） ==========
 
+
 def report_upload_progress(
     file_path: str,
     filename: str,
@@ -562,7 +556,7 @@ def report_upload_progress(
 ):
     """
     报告上传进度（全局函数，供上传器调用）
-    
+
     Args:
         file_path: 文件路径
         filename: 文件名

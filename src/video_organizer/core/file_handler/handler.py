@@ -29,6 +29,7 @@ from ...utils.logging_utils import (
     with_file_id,
 )
 from ...database.operations import record_task
+from ...database.task_tracking import prepare_task
 from ...database.session import init_db as init_task_db
 
 # 获取模块级别的 logger
@@ -690,7 +691,14 @@ class VideoFileHandler:
 
                 try:
                     self._process_file_internal(
-                        file_path, worker_id, tmdb_override=tmdb_override
+                        file_path,
+                        worker_id,
+                        tmdb_override=tmdb_override,
+                        tracking_task_id=(
+                            queued_item[2]
+                            if isinstance(queued_item, tuple) and len(queued_item) > 2
+                            else None
+                        ),
                     )
                 except Exception as e:
                     self.logger.error(
@@ -755,7 +763,8 @@ class VideoFileHandler:
                 console_log(f"\n🎉 视频上传成功!")
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
-                record_task(file_path, "completed", end_time=datetime.now())
+                self._failed_files.pop(file_path, None)
+                self._record_task(file_path, "completed", end_time=datetime.now())
 
                 # 如果配置了上传后删除文件，执行删除操作
                 if self.delete_after_upload:
@@ -892,9 +901,10 @@ class VideoFileHandler:
                 self._parent_monitor._pending_files.add(file_path)
             return False
 
+        tracking_task_id = prepare_task(file_path, self.upload_targets, status="queued")
         if self._use_queue:
             # 放入队列异步处理
-            self._upload_queue.put(file_path)
+            self._upload_queue.put((file_path, None, tracking_task_id))
 
             queue_size = self._upload_queue.qsize()
             console_log(f"\n✅ 已加入处理队列: {os.path.basename(file_path)}")
@@ -904,19 +914,25 @@ class VideoFileHandler:
             return True
         else:
             # 同步直接处理
-            return self._process_file_internal(file_path)
+            return self._process_file_internal(
+                file_path, tracking_task_id=tracking_task_id
+            )
 
-    def _process_file_internal(self, file_path, worker_id=0, tmdb_override=None):
+    def _process_file_internal(
+        self, file_path, worker_id=0, tmdb_override=None, tracking_task_id=None
+    ):
         manager = self._runtime_manager
         import copy
 
         if manager is None:
             task = copy.copy(self)
+            task._requested_task_id = tracking_task_id
             task._manual_tmdb_override = tmdb_override
             return task._process_file_snapshot(file_path, worker_id)
 
         with manager.lease() as generation:
             task = copy.copy(generation.handler)
+            task._requested_task_id = tracking_task_id
             task._manual_tmdb_override = tmdb_override
             # 防止一项任务的规则字段锁污染同代其他线程。
             task.renamer = copy.copy(generation.handler.renamer)
@@ -931,10 +947,39 @@ class VideoFileHandler:
             task._file_downloader_map = dict(generation.handler._file_downloader_map)
             return task._process_file_snapshot(file_path, worker_id)
 
+    def _record_task(self, file_path, status, **kwargs):
+        return record_task(
+            file_path,
+            status,
+            task_id=getattr(self, "_tracked_task_id", None),
+            targets=",".join(sorted(self.upload_targets)),
+            **kwargs,
+        )
+
     def _process_file_snapshot(self, file_path, worker_id=0):
         """
         内部文件处理逻辑（包含元数据获取、API调用、上传）
         """
+        self._tracked_task_id = getattr(self, "_requested_task_id", None)
+        try:
+            self._tracked_task_id = prepare_task(
+                file_path,
+                self.upload_targets,
+                self._tracked_task_id,
+                tmdb_override=getattr(self, "_manual_tmdb_override", None),
+            )
+            if not getattr(self, "_manual_tmdb_override", None):
+                from ...database.task_tracking import get_attempts
+
+                self._manual_tmdb_override = get_attempts(self._tracked_task_id)[
+                    "tmdb_override"
+                ]
+        except (ValueError, OSError) as exc:
+            self._failed_files[file_path] = str(exc)
+            self._record_task(
+                file_path, "failed", error_message=str(exc), end_time=datetime.now()
+            )
+            return False
         # 为当前文件的处理设置日志标识（幂等：若已由 worker 设置则复用同一编号）
         set_file_id(file_path)
         console_log(f"\n🔍 [线程#{worker_id}] 开始深入处理文件: {file_path}")
@@ -989,7 +1034,7 @@ class VideoFileHandler:
                     )
                     console_log(f"⚠️  TMDB 请求异常，文件将加入自动重试: {reason}")
                     self._failed_files[file_path] = reason
-                    record_task(
+                    self._record_task(
                         file_path,
                         "failed",
                         error_message=reason,
@@ -1002,7 +1047,7 @@ class VideoFileHandler:
                     console_log(f"⚠️  文件将跳过上传，等待手动处理\n")
                     # 记录失败原因，但不标记为已上传（以便后续可以重试）
                     self._failed_files[file_path] = "未找到 TMDB 匹配结果"
-                    record_task(
+                    self._record_task(
                         file_path,
                         "failed",
                         error_message="未找到 TMDB 匹配结果",
@@ -1247,7 +1292,7 @@ class VideoFileHandler:
             else:
                 # 需要 Emos 但没有 item_id
                 self._failed_files[file_path] = "未找到匹配的item_id"
-                record_task(
+                self._record_task(
                     file_path,
                     "failed",
                     error_message="未找到匹配的item_id",
@@ -1283,7 +1328,7 @@ class VideoFileHandler:
 
             # 记录失败原因
             self._failed_files[file_path] = f"API请求失败: {str(e)}"
-            record_task(
+            self._record_task(
                 file_path,
                 "failed",
                 error_message=f"API请求失败: {str(e)}",
@@ -1325,6 +1370,10 @@ class VideoFileHandler:
 
         # 添加到上传中集合
         self._uploading_files.add(file_path)
+        if getattr(self, "_tracked_task_id", None):
+            from ...database.task_tracking import set_task_status
+
+            set_task_status(self._tracked_task_id, "uploading")
 
         # 准备媒体信息（用于123云盘创建文件夹）
         media_info = {
@@ -1667,7 +1716,8 @@ class VideoFileHandler:
                 console_log(f"\n🎉 [线程#{worker_id}] 所有云盘上传成功!")
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
-                record_task(file_path, "completed", end_time=datetime.now())
+                self._failed_files.pop(file_path, None)
+                self._record_task(file_path, "completed", end_time=datetime.now())
                 self._uploading_files.discard(file_path)
 
                 # 执行 emya 数据库入库（如果启用）
@@ -1830,7 +1880,7 @@ class VideoFileHandler:
                 self._failed_files[file_path] = (
                     f"部分云盘上传失败: {', '.join(failed_targets)}"
                 )
-                record_task(
+                self._record_task(
                     file_path,
                     "failed",
                     error_message=f"部分云盘上传失败: {', '.join(failed_targets)}",
@@ -1858,7 +1908,7 @@ class VideoFileHandler:
             self._uploading_files.discard(file_path)
             # 记录失败原因，以便 Web UI 显示和重试
             self._failed_files[file_path] = f"上传异常: {str(e)}"
-            record_task(
+            self._record_task(
                 file_path,
                 "failed",
                 error_message=f"上传异常: {str(e)}",
@@ -1883,7 +1933,10 @@ class VideoFileHandler:
             )
 
     def force_process_file(
-        self, file_path: str, tmdb_override: Optional[Dict] = None
+        self,
+        file_path: str,
+        tmdb_override: Optional[Dict] = None,
+        tracking_task_id=None,
     ) -> bool:
         """
         强制处理文件
@@ -1904,43 +1957,33 @@ class VideoFileHandler:
 
         print(f"检测到文件: {file_path}")
 
-        # 即使文件已上传，强制模式可能希望重试，所以我们尝试从已上传集合中移除它
-        if file_path in self._uploaded_files:
-            self._uploaded_files.discard(file_path)
-            self.logger.info(f"强制处理: 从已上传集合中移除 {file_path}")
-
-        if file_path in self._failed_files:
-            del self._failed_files[file_path]
-            self.logger.info(f"强制处理: 从失败集合中移除 {file_path}")
-
-        # 使用锁保护去重检查
         with self._queue_lock:
-            # 检查文件是否已在队列中，避免重复添加
-            if file_path in self._queued_files:
-                self.logger.info(f"强制处理: 文件已在队列中，跳过重复添加: {file_path}")
-                console_log(
-                    f"\n⚠️  文件已在队列中，跳过: {os.path.basename(file_path)}"
-                )
-                return True
-
-            # 标记为处理中并添加到队列追踪集合
+            if (
+                file_path in self._queued_files
+                or file_path in self._uploading_files
+                or file_path in self._processing_files
+            ):
+                return False
+            tracking_task_id = prepare_task(
+                file_path,
+                self.upload_targets,
+                tracking_task_id,
+                status="queued",
+                tmdb_override=tmdb_override,
+            )
+            self._uploaded_files.discard(file_path)
+            self._failed_files.pop(file_path, None)
             self._processing_files.add(file_path)
             self._queued_files.add(file_path)
-
-        # 检查文件是否不支持
-        if not self._is_supported_file(file_path):
-            # 清理状态
-            with self._queue_lock:
-                self._processing_files.discard(file_path)
-                self._queued_files.discard(file_path)
-            # log_failure(self.logger, f"不支持的文件类型: {file_path}")
-            # return False
-            pass
 
         if self._use_queue:
             # 放入队列异步处理
             self._upload_queue.put(
-                (file_path, dict(tmdb_override)) if tmdb_override else file_path
+                (
+                    file_path,
+                    dict(tmdb_override) if tmdb_override else None,
+                    tracking_task_id,
+                )
             )
 
             queue_size = self._upload_queue.qsize()
@@ -1951,7 +1994,11 @@ class VideoFileHandler:
             return True
         else:
             # 同步直接处理
-            return self._process_file_internal(file_path, tmdb_override=tmdb_override)
+            return self._process_file_internal(
+                file_path,
+                tmdb_override=tmdb_override,
+                tracking_task_id=tracking_task_id,
+            )
 
     def stop_upload_queue(self):
         """停止上传队列处理线程"""

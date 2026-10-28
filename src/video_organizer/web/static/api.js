@@ -188,15 +188,15 @@ async function loadDownloadersFromApi() {
     return await apiRequest('/downloaders');
 }
 
-async function retryTaskViaApi(filePath) {
+async function retryTaskViaApi(filePath, taskId) {
     return await apiRequest('/tasks/retry', {
         method: 'POST',
-        body: JSON.stringify({ file_path: filePath })
+        body: JSON.stringify({ file_path: filePath, task_id: taskId })
     });
 }
 
-async function clearFailedTaskViaApi(filePath) {
-    return await apiRequest(`/tasks/failed/${encodeURIComponent(filePath)}`, { method: 'DELETE' });
+async function clearFailedTaskViaApi(filePath, taskId) {
+    return await apiRequest(`/tasks/failed/${encodeURIComponent(filePath)}${taskId ? "?task_id=" + taskId : ""}`, { method: 'DELETE' });
 }
 
 async function clearAllFailedViaApi() {

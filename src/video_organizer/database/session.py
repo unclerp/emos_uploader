@@ -29,10 +29,10 @@ def get_db_path() -> Path:
 def init_db(db_path: str = None) -> str:
     """
     初始化数据库引擎和表结构
-    
+
     Args:
         db_path: 数据库文件路径，None 则使用默认路径
-        
+
     Returns:
         实际使用的数据库路径
     """
@@ -47,6 +47,11 @@ def init_db(db_path: str = None) -> str:
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
     Base.metadata.create_all(bind=_engine)
+    from .task_tracking import migrate_history, recover_interrupted
+
+    with _SessionLocal() as db:
+        migrate_history(db)
+        recover_interrupted(db)
     logger.info(f"数据库已初始化: {path}")
     return path
 

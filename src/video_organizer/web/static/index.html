@@ -154,7 +154,8 @@
                     <div class="stat-card queue"><div class="stat-label">队列中</div><div class="stat-value" id="stat-queue">0</div></div>
                     <div class="stat-card processing"><div class="stat-label">处理中</div><div class="stat-value" id="stat-processing">0</div></div>
                     <div class="stat-card completed"><div class="stat-label">已完成</div><div class="stat-value" id="stat-completed">0</div></div>
-                    <div class="stat-card failed"><div class="stat-label">失败</div><div class="stat-value" id="stat-failed">0</div></div>
+                    <div class="stat-card failed"><div class="stat-label">未解决失败</div><div class="stat-value" id="stat-failed">0</div></div>
+                    <div class="stat-card completed"><div class="stat-label">重试已解决</div><div class="stat-value" id="stat-resolved">0</div></div>
                 </div>
                 <div class="card">
                     <div class="card-header">
@@ -219,7 +220,7 @@
                     <div class="tab active" data-tab="queued">队列中</div>
                     <div class="tab" data-tab="processing">处理中</div>
                     <div class="tab" data-tab="completed">已完成</div>
-                    <div class="tab" data-tab="failed">失败</div>
+                    <div class="tab" data-tab="failed">失败与重试</div>
                 </div>
                 <div class="card">
                     <div class="card-header">
@@ -231,6 +232,7 @@
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                                 </button>
                             </div>
+                            <select id="taskIssueFilter" class="form-select" aria-label="失败处理状态" style="display:none;width:auto"><option value="failed">未解决</option><option value="resolved">已解决</option><option value="issues">全部失败历史</option></select>
                             <button class="btn btn-secondary btn-sm" id="refreshTasksBtn">刷新</button>
                             <button class="btn btn-danger btn-sm" id="clearFailedBtn" style="display:none">清除失败记录</button>
                             <button class="btn btn-primary btn-sm" id="retryAllBtn" style="display:none">重试全部</button>
@@ -666,9 +668,9 @@
         </div>
     </div>
 
-    <script src="/static/api.js?v=d8db547a3cc1"></script>
+    <script src="/static/api.js?v=5bf2ebe2cec0"></script>
     <script src="/static/ui.js?v=506cac969496"></script>
     <script src="/static/rules.js?v=fa1ffc6368c2"></script>
-    <script src="/static/app.js?v=ee6b3bd5ade6"></script>
+    <script src="/static/app.js?v=1191c01ca555"></script>
 </body>
 </html>

@@ -171,9 +171,13 @@ def test_invalid_explicit_id_never_falls_back(monkeypatch):
 
 
 def test_queue_selection_is_task_local(monkeypatch, tmp_path):
+    module = importlib.import_module("video_organizer.core.file_handler.handler")
+    monkeypatch.setattr(module, "prepare_task", Mock(side_effect=[101, 102]))
     handler = VideoFileHandler.__new__(VideoFileHandler)
     handler.logger = logging.getLogger("test")
     handler._uploaded_files = set()
+    handler._uploading_files = set()
+    handler.upload_targets = ["emos"]
     handler._failed_files = {}
     handler._queued_files = set()
     handler._processing_files = set()
@@ -198,8 +202,15 @@ def test_queue_selection_is_task_local(monkeypatch, tmp_path):
     selection["tmdb_id"] = 99
     handler.force_process_file(str(second))
     queued = handler._upload_queue.get_nowait()
-    handler._process_file_internal(queued[0], tmdb_override=queued[1])
-    handler._process_file_internal(handler._upload_queue.get_nowait())
+    handler._process_file_internal(
+        queued[0], tmdb_override=queued[1], tracking_task_id=queued[2]
+    )
+    queued_second = handler._upload_queue.get_nowait()
+    handler._process_file_internal(
+        queued_second[0],
+        tmdb_override=queued_second[1],
+        tracking_task_id=queued_second[2],
+    )
     assert seen == [
         (str(first), {"tmdb_id": 42, "media_type": "tv"}),
         (str(second), None),
@@ -241,8 +252,10 @@ def test_real_filename_parser_keeps_episode_without_search():
 def test_failed_override_is_not_automatically_retried_without_id(monkeypatch):
     module = importlib.import_module("video_organizer.core.file_handler.handler")
     monkeypatch.setattr(module, "record_task", Mock())
+    monkeypatch.setattr(module, "prepare_task", Mock(return_value=101))
     handler = VideoFileHandler.__new__(VideoFileHandler)
     handler.logger = logging.getLogger("test")
+    handler.upload_targets = ["emos"]
     handler.renamer = Mock()
     handler.renamer.extract_metadata_with_tmdb.side_effect = ValueError("指定编号无效")
     handler._manual_tmdb_override = {"tmdb_id": 42, "media_type": "tv"}

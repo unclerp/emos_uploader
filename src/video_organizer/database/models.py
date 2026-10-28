@@ -16,8 +16,12 @@ class TaskHistory(Base):
     file_path: Mapped[str] = mapped_column(String(1024), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    start_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
-    end_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    start_time: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    end_time: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -28,8 +32,12 @@ class ManualRule(Base):
     rule_text: Mapped[str] = mapped_column(Text, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 class ReleaseGroupMapping(Base):
@@ -37,9 +45,15 @@ class ReleaseGroupMapping(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     group_name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    content_type: Mapped[str] = mapped_column(String(32), nullable=False)  # anime, drama, movie
-    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    content_type: Mapped[str] = mapped_column(
+        String(32), nullable=False
+    )  # anime, drama, movie
+    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 class LlmProvider(Base):
@@ -54,8 +68,12 @@ class LlmProvider(Base):
     weight: Mapped[int] = mapped_column(Integer, default=1)
     timeout: Mapped[int] = mapped_column(Integer, default=30)
     max_retries: Mapped[int] = mapped_column(Integer, default=2)
-    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 class AuthUser(Base):
@@ -66,8 +84,12 @@ class AuthUser(Base):
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     role: Mapped[str] = mapped_column(String(32), default="admin")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 class AuthApiKey(Base):
@@ -77,9 +99,15 @@ class AuthApiKey(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     api_key_hash: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_used_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    last_used_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 class RuntimeConfig(Base):
@@ -88,4 +116,35 @@ class RuntimeConfig(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+
+
+class UploadTask(Base):
+    """一个文件版本及目标组合的当前状态，历史尝试单独保留。"""
+
+    __tablename__ = "upload_task"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    identity: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    targets: Mapped[str] = mapped_column(String(128), default="unknown")
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="failed", index=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    cleared: Mapped[bool] = mapped_column(Boolean, default=False)
+    tmdb_override: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class UploadAttempt(Base):
+    """关联原始历史表，不删除或改写已有的失败原因。"""
+
+    __tablename__ = "upload_attempt"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    history_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
