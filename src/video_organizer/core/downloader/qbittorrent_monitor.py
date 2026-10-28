@@ -75,6 +75,9 @@ class QBittorrentMonitor(DownloaderMonitor):
         """连接暂不可用也启动轮询，让下载器恢复后可以自动继续。"""
         if self.running:
             return
+        # 热更新会在 start 返回后验证连接，首次登录必须先完成。
+        # 登录暂时失败仍启动轮询，让初始启动时可在 qB 恢复后重连。
+        self._login()
         self.running = True
         self._stop_event.clear()
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)

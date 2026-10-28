@@ -5,6 +5,8 @@ import configparser
 import logging
 from typing import Dict, Any, List, Optional
 
+from .path_mappings import parse_path_mappings
+
 # 配置日志记录器
 logger = logging.getLogger(__name__)
 
@@ -338,18 +340,9 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
                     elif isinstance(default_options[key], dict):
                         # 特殊处理字典类型，用于path_mappings配置
                         if key == "path_mappings":
-                            mappings_str = config[section].get(key, "")
-                            mappings = {}
-                            if mappings_str:
-                                for mapping in mappings_str.split(","):
-                                    mapping = mapping.strip()
-                                    if mapping:
-                                        parts = mapping.split(":", 1)
-                                        if len(parts) == 2:
-                                            mappings[parts[0].strip()] = parts[
-                                                1
-                                            ].strip()
-                            config_dict[section][key] = mappings
+                            config_dict[section][key] = parse_path_mappings(
+                                config[section].get(key, "")
+                            )
                         else:
                             config_dict[section][key] = config[section].get(key)
                     else:
@@ -364,7 +357,11 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
         if section not in DEFAULT_CONFIG:
             config_dict[section] = {}
             for key, value in config[section].items():
-                config_dict[section][key] = value
+                config_dict[section][key] = (
+                    parse_path_mappings(value)
+                    if section.startswith("downloader.") and key == "path_mappings"
+                    else value
+                )
 
     # 特殊处理 manual_rules 节中的规则配置
     if "manual_rules" in config_dict and "manual_rules" in config:
@@ -428,8 +425,7 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
             # 从section名称中提取下载器类型（例如：downloader.aria2 -> aria2）
             downloader_type = section.split(".")[1] if "." in section else ""
             downloader_config["type"] = downloader_type
-            for key, value in config[section].items():
-                downloader_config[key] = value
+            downloader_config.update(config_dict[section])
             config_dict["downloaders"].append(downloader_config)
 
     return config_dict
@@ -561,7 +557,10 @@ def update_config(
                 continue
             config[section_name] = {}
             for key, value in options.items():
-                config[section_name][key] = str(value)
+                config[section_name][key] = (
+                    json.dumps(value, ensure_ascii=False)
+                    if isinstance(value, dict) else str(value)
+                )
 
     # 保存配置文件
     parent_dir = os.path.dirname(config_path)

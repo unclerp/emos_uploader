@@ -5,6 +5,7 @@ import json
 from typing import Dict, Any
 
 from .config_loader import DEFAULT_CONFIG
+from .path_mappings import parse_path_mappings
 from .manual_rule_engine import ManualRuleEngine
 
 
@@ -56,6 +57,8 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
                         and values[key] > 128
                     ):
                         raise ValueError("并发数不能超过 128")
+                elif key == "path_mappings":
+                    values[key] = parse_path_mappings(value)
                 elif isinstance(default, dict):
                     if isinstance(value, str):
                         values[key] = json.loads(value)

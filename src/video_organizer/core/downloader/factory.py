@@ -3,6 +3,7 @@
 import logging
 from typing import Callable, Dict, Optional
 
+from ..path_mappings import parse_path_mappings
 from .base import DownloaderMonitor
 from .aria2_monitor import Aria2Monitor
 from .qbittorrent_monitor import QBittorrentMonitor
@@ -97,22 +98,4 @@ class DownloaderMonitorFactory:
         Returns:
             Dict[str, str]: 解析后的路径映射字典
         """
-        if isinstance(mappings_config, dict):
-            return mappings_config
-        
-        if isinstance(mappings_config, str) and mappings_config.strip():
-            # 旧格式: "/downloads:/root/downloads"
-            parts = mappings_config.split(":", 1)
-            if len(parts) == 2:
-                return {parts[0].strip(): parts[1].strip()}
-        
-        if isinstance(mappings_config, list):
-            result = {}
-            for item in mappings_config:
-                if isinstance(item, str) and ":" in item:
-                    parts = item.split(":", 1)
-                    if len(parts) == 2:
-                        result[parts[0].strip()] = parts[1].strip()
-            return result
-        
-        return {}
+        return parse_path_mappings(mappings_config)
