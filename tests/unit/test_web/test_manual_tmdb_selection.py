@@ -173,6 +173,10 @@ def test_invalid_explicit_id_never_falls_back(monkeypatch):
 def test_queue_selection_is_task_local(monkeypatch, tmp_path):
     module = importlib.import_module("video_organizer.core.file_handler.handler")
     monkeypatch.setattr(module, "prepare_task", Mock(side_effect=[101, 102]))
+    # 本测试隔离数据库，只验证两次手动选择不会相互污染。
+    monkeypatch.setattr(
+        "video_organizer.core.post_upload.path_busy", lambda path: False
+    )
     handler = VideoFileHandler.__new__(VideoFileHandler)
     handler.logger = logging.getLogger("test")
     handler._uploaded_files = set()

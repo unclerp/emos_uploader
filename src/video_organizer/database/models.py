@@ -149,3 +149,42 @@ class UploadAttempt(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     history_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+
+
+class DownloadFileBinding(Base):
+    """qB 种子文件与上传任务的稳定关联，移动不改变上传历史。"""
+
+    __tablename__ = "download_file_binding"
+    identity: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_key: Mapped[str] = mapped_column(String(64), index=True)
+    downloader_key: Mapped[str] = mapped_column(String(64), index=True)
+    torrent_hash: Mapped[str] = mapped_column(String(128), index=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True)
+    file_index: Mapped[int] = mapped_column(Integer)
+    file_size: Mapped[int] = mapped_column(Integer)
+    source_path: Mapped[str] = mapped_column(Text)
+    current_path: Mapped[str] = mapped_column(Text, index=True)
+    pending_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True, index=True)
+
+
+class PostUploadAction(Base):
+    """整种子的上传后操作，失败与上传结果分开持久保存。"""
+
+    __tablename__ = "post_upload_action"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    identity: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    downloader_key: Mapped[str] = mapped_column(String(64), index=True)
+    torrent_hash: Mapped[str] = mapped_column(String(128))
+    torrent_name: Mapped[str] = mapped_column(Text, default="")
+    targets: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))
+    destination: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="waiting", index=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    requested_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.now
+    )

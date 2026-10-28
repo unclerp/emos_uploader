@@ -536,7 +536,8 @@ async def get_config_schema():
             "description": "处理配置",
             "fields": {
                 "auto_upload": "是否自动上传",
-                "delete_after_upload": "上传后是否删除源文件",
+                "post_upload_action": "上传后操作：保留、通过 qB 移动、删除任务及文件",
+                "post_upload_move_path": "qB 可访问的移动目标目录",
                 "max_upload_workers": "最大上传工作线程数",
             }
         },

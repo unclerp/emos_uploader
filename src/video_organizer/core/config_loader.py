@@ -113,7 +113,9 @@ DEFAULT_CONFIG = {
         "rename_only": False,
         "copy_mode": False,
         "delete_original": False,
-        "delete_after_upload": False,
+        "delete_after_upload": False,  # 兼容旧配置，新设置优先使用 post_upload_action
+        "post_upload_action": "",
+        "post_upload_move_path": "",
         "min_file_size": 0,
         "ignore_patterns": [],
         "upload_targets": "emos",

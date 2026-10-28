@@ -146,9 +146,12 @@ class VideoFileHandler:
 
         # 初始化处理配置
         self.processing_config = processing_config or {}
-        self.delete_after_upload = self.processing_config.get(
-            "delete_after_upload", False
+        from ..post_upload import post_upload_policy
+
+        self.post_upload_action, self.post_upload_move_path = post_upload_policy(
+            self.processing_config
         )
+        self.delete_after_upload = self.post_upload_action == "delete"
         # 清理配置值中的行内注释
         raw_targets = self.processing_config.get("upload_targets", "emos")
         raw_targets = str(raw_targets).split("#")[0].split(";")[0].strip()
@@ -795,7 +798,9 @@ class VideoFileHandler:
                 )
 
                 # 如果配置了上传后删除文件，执行删除操作
-                if self.delete_after_upload:
+                if self.delete_after_upload and not self._qb_post_upload_managed(
+                    file_path
+                ):
                     try:
                         # 1. 先暂停下载器中的种子，提前释放文件句柄
                         self._release_file_lock_via_downloader(file_path)
@@ -876,6 +881,10 @@ class VideoFileHandler:
     def enqueue_qb_file(self, file_path, downloader):
         """qB 回调同步完成接收，以实际队列和持久任务状态去重。"""
         with self._queue_lock:
+            from ..post_upload import path_busy
+
+            if path_busy(file_path):
+                return False
             if (
                 file_path in self._queued_files
                 or file_path in self._processing_files
@@ -884,6 +893,8 @@ class VideoFileHandler:
                 return True
             task = get_file_task(file_path, self.upload_targets)
             if task and task["status"] in ("completed", "skipped"):
+                if getattr(downloader, "post_upload", None):
+                    downloader.post_upload.bind(file_path, task["id"])
                 return True
             if task and task["status"] == "failed":
                 interrupted = task["error"] == "服务重启，前次处理未完成，请重试"
@@ -904,6 +915,8 @@ class VideoFileHandler:
             if not self._use_queue:
                 raise RuntimeError("qB 自动监控需要启用上传队列")
             task_id = prepare_task(file_path, self.upload_targets, status="queued")
+            if getattr(downloader, "post_upload", None):
+                downloader.post_upload.bind(file_path, task_id, schedule=True)
             self._file_downloader_map[file_path] = downloader
             self._queued_files.add(file_path)
             self._processing_files.add(file_path)
@@ -951,6 +964,10 @@ class VideoFileHandler:
 
         # 使用锁保护去重检查，防止竞态条件
         with self._queue_lock:
+            from ..post_upload import path_busy
+
+            if path_busy(file_path):
+                return False
             # 检查文件是否正在处理中（API调用阶段）
             if file_path in self._processing_files:
                 self.logger.debug(f"文件正在处理中，跳过: {file_path}")
@@ -1919,7 +1936,9 @@ class VideoFileHandler:
 
                 # 如果配置了上传后删除文件，执行删除操作
                 deleted = False
-                if self.delete_after_upload:
+                if self.delete_after_upload and not self._qb_post_upload_managed(
+                    file_path
+                ):
                     try:
                         # 尝试从下载器中删除任务
                         #   每次调用都会标记当前文件已上传完成
@@ -2074,6 +2093,10 @@ class VideoFileHandler:
         print(f"检测到文件: {file_path}")
 
         with self._queue_lock:
+            from ..post_upload import path_busy
+
+            if path_busy(file_path):
+                return False
             if (
                 file_path in self._queued_files
                 or file_path in self._uploading_files
@@ -2171,6 +2194,10 @@ class VideoFileHandler:
 
         print(f"DEBUG: 未找到匹配的映射路径")
         return file_path
+
+    def _qb_post_upload_managed(self, file_path):
+        downloader = getattr(self, "_file_downloader_map", {}).get(file_path)
+        return getattr(downloader, "post_upload", None) is not None
 
     def _cleanup_download_task(self, file_path) -> bool:
         """

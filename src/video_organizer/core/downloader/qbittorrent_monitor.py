@@ -456,7 +456,11 @@ class QBittorrentMonitor(DownloaderMonitor):
 
     def _poll_once(self):
         """每轮检查所有已完成任务；去重和最终成功由持久任务记录决定。"""
-        for torrent in self._get_completed_torrents():
+        torrents = self._get_completed_torrents()
+        post_upload = getattr(self, "post_upload", None)
+        if post_upload:
+            post_upload.reconcile(torrents)
+        for torrent in torrents:
             if self._stop_event.is_set():
                 break
             if not self._torrent_ready(torrent):
@@ -473,6 +477,9 @@ class QBittorrentMonitor(DownloaderMonitor):
                 if self._stop_event.is_set():
                     break
                 try:
+                    # 移动后的目录可以不挂入上传容器，稳定来源标识仍能防止重复上传。
+                    if post_upload and post_upload.handled(torrent, file):
+                        continue
                     file_path = self._ready_file_path(torrent, file)
                     if file_path is None or not isinstance(file.get("index"), int):
                         continue

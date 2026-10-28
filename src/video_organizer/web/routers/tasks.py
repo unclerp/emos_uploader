@@ -89,6 +89,7 @@ class RecentActivityItem(BaseModel):
     targets: str = "unknown"
     attempt_count: int = 0
     failure_count: int = 0
+    post_upload: Optional[Dict] = None
 
 
 class RecentActivityResponse(BaseModel):
@@ -113,6 +114,7 @@ class TaskListItem(BaseModel):
     targets: str = "unknown"
     attempt_count: int = 0
     failure_count: int = 0
+    post_upload: Optional[Dict] = None
 
 
 class TaskListPaginatedResponse(BaseModel):
@@ -151,6 +153,44 @@ class AllProgressResponse(BaseModel):
     success: bool
     count: int
     progress: Dict[str, UploadProgressResponse]
+
+
+@router.get("/post-upload")
+def get_post_upload_actions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    search: str = "",
+):
+    from ...core.post_upload import list_actions
+
+    items, total = list_actions((page - 1) * page_size, page_size, search)
+    return {
+        "success": True,
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.post("/post-upload/{action_id}/retry")
+def retry_post_upload_action(action_id: int):
+    from ...core.post_upload import QBPostUpload
+
+    for monitor in get_state_manager().get_downloader_monitors():
+        coordinator = getattr(monitor, "post_upload", None)
+        if isinstance(coordinator, QBPostUpload):
+            try:
+                coordinator.retry(action_id)
+                return {
+                    "success": True,
+                    "message": "已安排重试上传后操作，不会重新上传文件",
+                }
+            except ValueError:
+                continue
+    raise HTTPException(
+        status_code=409, detail="操作未失败，或对应的 qB 下载器未连接到当前配置"
+    )
 
 
 @router.get("/status", response_model=TaskStatusResponse)

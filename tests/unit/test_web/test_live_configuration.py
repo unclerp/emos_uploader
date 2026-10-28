@@ -217,6 +217,8 @@ def test_unknown_runtime_fields_are_not_exposed_as_database_source():
         "delete_after_upload": False,
         "max_upload_workers": 4,
         "upload_targets": "emos,p123",
+        "post_upload_action": "keep",
+        "post_upload_move_path": "",
     }
 
 
@@ -466,6 +468,7 @@ def test_downloader_upload_completion_records_survive_reconfiguration(monkeypatc
 
     class Downloader:
         rpc_url = "http://same-downloader"
+        username = "test"
 
         def __init__(self):
             self._upload_completed_files = set()
@@ -485,7 +488,9 @@ def test_downloader_upload_completion_records_survive_reconfiguration(monkeypatc
     )
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["downloaders"] = [{"type": "qbittorrent"}]
-    candidate = monitor.prepare_live_config(config, SimpleNamespace())
+    candidate = monitor.prepare_live_config(
+        config, SimpleNamespace(upload_targets=["emos"])
+    )
     assert (
         candidate.downloader_monitors[0]._upload_completed_files
         is previous._upload_completed_files

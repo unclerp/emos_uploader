@@ -79,6 +79,10 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         for key, value in result["naming"].items():
             naming_rules[key[:-7] if key.endswith("_format") else key] = value
     proc = result.setdefault("processing", {})
+    from .post_upload import post_upload_policy
+
+    proc["post_upload_action"], proc["post_upload_move_path"] = post_upload_policy(proc)
+    proc["delete_after_upload"] = proc["post_upload_action"] == "delete"
     raw = proc.get("upload_targets", "emos")
     aliases = {"both": "emos,p123", "all": "emos,p123,cloud189,yun139"}
     raw = aliases.get(str(raw).strip(), raw)

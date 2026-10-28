@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function page(items) {
-    const requests = [], timers = [];
+    const requests = [], timers = [], methods = [];
     const sandbox = {
         window: {}, console, URLSearchParams,
         localStorage: { getItem: () => 'test', removeItem() {} },
@@ -14,8 +14,9 @@ function page(items) {
         escapeHtml: value => String(value), formatSize: value => String(value),
         showToast() {}, showModal() {},
         setTimeout: callback => timers.push(callback),
-        async fetch(url) {
+        async fetch(url, options = {}) {
             requests.push(url);
+            methods.push(options.method || 'GET');
             return { ok: true, headers: { get: () => 'application/json' },
                 json: async () => ({ items, total: items.length, page: 1, page_size: 20 }) };
         },
@@ -30,7 +31,7 @@ function page(items) {
         el.clearFailedBtn = {style:{}}; el.retryAllBtn = {style:{}};
         el.taskIssueFilter = {value:'failed'};
     `, sandbox);
-    return { requests, timers, run: code => vm.runInContext(code, sandbox) };
+    return { requests, timers, methods, run: code => vm.runInContext(code, sandbox) };
 }
 
 for (const [status, label, tone] of [
@@ -75,3 +76,37 @@ test('失败后确认资源已存在，显示已跳过及已解决', () => {
     const p = page([]);
     assert.equal(p.run("taskStatusLabel({status:'skipped',resolved:true})"), '已跳过 · 已解决');
 });
+
+
+test('上传后操作列表独立展示失败，按钮只重试移动', async () => {
+    const p = page([{id:7, torrent_name:'Season',torrent_hash:'abc',kind:'move',destination:'/qb/archive',status:'failed',error:'目录不可写',attempt_count:1}]);
+    await p.run("state.currentTab = 'post-upload'; updateTaskList()");
+    assert.ok(p.requests[0].startsWith('/api/tasks/post-upload?'));
+    assert.match(p.run('el.taskList.innerHTML'), /上传完成，移动失败/);
+    assert.match(p.run('el.taskList.innerHTML'), /仅重试移动/);
+    assert.doesNotMatch(p.run('el.taskList.innerHTML'), /retryTrackedTask|上传失败/);
+    await p.run('retryPostUploadAction(7)');
+    assert.equal(p.requests[1], '/api/tasks/post-upload/7/retry');
+    assert.equal(p.methods[1], 'POST');
+    assert.ok(p.requests.every(url => !url.startsWith('/api/tasks/retry')));
+});
+
+test('最近活动保留上传结果，移动失败另行说明', () => {
+    const p = page([]);
+    assert.equal(p.run("taskStatusLabel({status:'completed',post_upload:{status:'failed',kind:'move'}})"), '上传完成，移动失败');
+    assert.equal(p.run("taskStatusLabel({status:'skipped',post_upload:{status:'failed',kind:'move'}})"), '已跳过，移动失败');
+});
+
+for (const [action,legacy,expected] of [['',true,'delete'],['',false,'keep'],['keep',true,'keep'],['move',false,'move']]) {
+    test(`上传后操作下拉框兼容旧值 ${legacy} 并优先显示 ${action || '兼容设置'}`, () => {
+        const p = page([]);
+        p.run(`state.config={processing:{delete_after_upload:${legacy},post_upload_action:${JSON.stringify(action)},post_upload_move_path:'/qb/archive'}}`);
+        const html = p.run(`renderConfigField('processing','post_upload_action',${JSON.stringify(action)})`);
+        assert.match(html, /<select[^>]+name="processing.post_upload_action"/);
+        assert.match(html, new RegExp('value="' + expected + '" selected'));
+        assert.match(html, /保留原文件/);
+        assert.match(html, /通过 qB 移动/);
+        assert.match(html, /删除任务及文件/);
+        assert.equal(p.run("configEntries('processing').some(([k])=>k==='delete_after_upload')"), false);
+    });
+}

@@ -121,7 +121,10 @@ def append_result(db, history, task_id=None, targets="unknown", auto_retry=False
 
 
 def serialize(task):
+    from ..core.post_upload import task_action
+
     return {
+        "post_upload": task_action(task),
         "id": task.id,
         "path": task.file_path,
         "status": task.status,

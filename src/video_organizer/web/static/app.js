@@ -354,6 +354,10 @@ async function updateTaskList() {
     const canRetry = tab === 'failed' && el.taskIssueFilter.value === 'failed';
     el.clearFailedBtn.style.display = canRetry ? 'inline-flex' : 'none';
     el.retryAllBtn.style.display = canRetry ? 'inline-flex' : 'none';
+    if (tab === 'post-upload') {
+        await updatePostUploadList();
+        return;
+    }
     const isLiveTab = tab === 'queued' || tab === 'processing';
 
     if (isLiveTab) {
@@ -404,6 +408,37 @@ async function updateTaskList() {
             el.taskList.innerHTML = `<tr><td colspan="4"><div class="empty-state"><p>加载失败</p></div></td></tr>`;
         }
     }
+}
+
+function postUploadLabel(action) {
+    const operation = action.kind === 'move' ? '移动' : '删除';
+    return {waiting:'等待整种子上传完成', moving:'上传完成，移动中', deleting:'上传完成，删除中',
+        moved:'上传完成，已移动', deleted:'上传完成，已删除', failed:`上传完成，${operation}失败`}[action.status] || action.status;
+}
+
+async function updatePostUploadList() {
+    try {
+        const params = new URLSearchParams({page:state.taskPage, page_size:state.taskPageSize, search:state.taskSearch});
+        const data = await apiRequest(`/tasks/post-upload?${params}`);
+        state.taskTotal = data.total || 0;
+        el.taskList.innerHTML = (data.items || []).map(item => `<tr>
+            <td class="col-path">${escapeHtml(item.torrent_name || item.torrent_hash)}<br><small>${escapeHtml(item.torrent_hash)}</small>${item.kind === 'move' ? `<br><small>移动到：${escapeHtml(item.destination)}</small>` : ''}</td>
+            <td class="col-status"><span class="badge ${['moved','deleted'].includes(item.status) ? 'badge-success' : 'badge-warning'}">${postUploadLabel(item)}</span>${item.error ? `<br><small>${escapeHtml(item.error)}</small>` : ''}<br><small>操作已尝试 ${item.attempt_count} 次</small></td>
+            <td class="col-time">${formatRelativeTime(item.time)}</td>
+            <td class="col-actions">${item.status === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryPostUploadAction(${item.id})">仅重试${item.kind === 'move' ? '移动' : '删除'}</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="4"><div class="empty-state"><p>暂无上传后操作</p></div></td></tr>';
+        updateTaskPagination(data);
+    } catch (e) {
+        el.taskList.innerHTML = '<tr><td colspan="4"><div class="empty-state"><p>加载失败</p></div></td></tr>';
+    }
+}
+
+async function retryPostUploadAction(id) {
+    try {
+        await apiRequest(`/tasks/post-upload/${id}/retry`, {method:'POST'});
+        showToast('已安排重试上传后操作，不会重新上传文件', 'success');
+        await updatePostUploadList();
+    } catch (e) { showToast(`重试未提交：${e.message}`, 'error'); }
 }
 
 function updateTaskPagination(data) {
@@ -544,7 +579,8 @@ async function loadConfig() {
 
 function configEntries(section) {
     return Object.entries(state.config?.[section] || {}).filter(([key]) =>
-        section !== 'manual_rules' || !key.startsWith('rule') || key === 'rules');
+        (section !== 'manual_rules' || !key.startsWith('rule') || key === 'rules') &&
+        (section !== 'processing' || key !== 'delete_after_upload'));
 }
 
 function updateConfigBadges() {
@@ -671,7 +707,14 @@ function renderConfigField(section, key, value) {
     const isSecret = ['password','token','secret','api_key','apikey'].some(s => key.toLowerCase().includes(s));
 
     let inputHtml;
-    if (typeof value === 'boolean') {
+    if (section === 'processing' && key === 'post_upload_action') {
+        const action = value || (state.config.processing.delete_after_upload ? 'delete' : 'keep');
+        inputHtml = `<select id="${inputId}" name="${inputName}">
+            ${[['keep','保留原文件'],['move','通过 qB 移动'],['delete','删除任务及文件']].map(([v,label]) => `<option value="${v}" ${action === v ? 'selected' : ''}>${label}</option>`).join('')}
+        </select><small>新接收的 qB 任务使用此设置；同种子全部已选视频上传完成（含重复跳过）后才操作。目录监控和手动处理不执行 qB 移动。</small>`;
+    } else if (section === 'processing' && key === 'post_upload_move_path') {
+        inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" autocomplete="off" spellcheck="false"><small>仅“通过 qB 移动”时必填。填写 qB 可访问的绝对目录，不是上传容器的路径。qB 移动会改为手动管理，保留当前做种或暂停状态。</small>`;
+    } else if (typeof value === 'boolean') {
         inputHtml = `<div class="toggle-wrap">
             <div class="toggle-track ${value ? 'on' : ''}" data-for="${inputId}">
                 <div class="toggle-thumb"></div>
@@ -693,7 +736,7 @@ function renderConfigField(section, key, value) {
     }
 
     return `<div class="config-field">
-        <div class="config-field-label">${escapeHtml(key)} <code>${section}.${key}</code></div>
+        <div class="config-field-label">${escapeHtml(section === 'processing' && key === 'post_upload_action' ? '上传后操作' : section === 'processing' && key === 'post_upload_move_path' ? 'qB 移动目标目录' : key)} <code>${section}.${key}</code></div>
         ${inputHtml}
     </div>`;
 }
@@ -2174,6 +2217,9 @@ function activityStatusTone(status) {
 }
 
 function taskStatusLabel(task) {
+    if (['completed','skipped'].includes(task.status) && task.post_upload?.status === 'failed') {
+        return `${task.status === 'skipped' ? '已跳过' : '上传完成'}，${task.post_upload.kind === 'move' ? '移动' : '删除'}失败`;
+    }
     if (task.status === 'skipped') return task.resolved ? '已跳过 · 已解决' : '已跳过';
     if (task.resolved) return '重试成功 · 已解决';
     return {completed:'已完成', failed:task.failure_count > 1 ? '重试失败 · 未解决' : '上传失败 · 未解决', queued:task.failure_count ? '等待重试' : '队列中', processing:task.failure_count ? '重试处理中' : '处理中', uploading:task.failure_count ? '重试上传中' : '上传中'}[task.status] || task.status;

@@ -131,6 +131,12 @@ class FileSystemMonitor:
             )
 
             if monitor:
+                if downloader_type == "qbittorrent":
+                    from ..post_upload import QBPostUpload
+
+                    monitor.post_upload = QBPostUpload(
+                        monitor, self.event_handler, self.config.get("processing", {})
+                    )
                 self.downloader_monitors.append(monitor)
                 logger.info(f"Initialized {downloader_type} monitor")
 

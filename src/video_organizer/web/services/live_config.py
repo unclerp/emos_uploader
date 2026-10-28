@@ -150,6 +150,9 @@ class LiveConfig:
                 self.current.monitor._live_generation = self.current
                 for downloader in monitor.downloader_monitors:
                     downloader.callback = self._callback(self.current)
+                    if getattr(downloader, "post_upload", None):
+                        downloader.post_upload.runtime_manager = self
+                        downloader.post_upload.generation = self.current
                 template.downloaders = monitor.downloader_monitors
             self.last_status = "applied"
 
@@ -363,6 +366,9 @@ class LiveConfig:
                 handler.downloaders = generation.monitor.downloader_monitors
                 for downloader in handler.downloaders:
                     downloader.callback = self._callback(generation)
+                    if getattr(downloader, "post_upload", None):
+                        downloader.post_upload.runtime_manager = self
+                        downloader.post_upload.generation = generation
             generation.cleaner = RecycleCleaner(config)
             generation.cleaner._hot_reloaded = True
             if self.current and self.current.cleaner:
