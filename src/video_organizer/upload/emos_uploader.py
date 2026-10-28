@@ -1605,10 +1605,10 @@ class RobustEmosVideoUploader:
                         filename=file_name,
                         uploader="emos",
                         progress=100,
-                        uploaded_bytes=file_size,
+                        uploaded_bytes=0,
                         total_bytes=file_size,
                         speed="existing size match",
-                        status="completed",
+                        status="skipped",
                     )
                     # 发送 Telegram 跳过通知（HTML格式避免文件名特殊字符导致解析崩溃）
                     safe_name = html.escape(file_name)
@@ -1682,10 +1682,10 @@ class RobustEmosVideoUploader:
                     filename=file_name,
                     uploader="emos",
                     progress=100,
-                    uploaded_bytes=file_size,
+                    uploaded_bytes=0,
                     total_bytes=file_size,
                     speed="existing resource",
-                    status="completed"
+                    status="skipped"
                 )
 
                 return {"media_uuid": "EXISTING_RESOURCE_SKIPPED", "skipped": True}
@@ -1714,10 +1714,10 @@ class RobustEmosVideoUploader:
                         filename=file_name,
                         uploader="emos",
                         progress=100,
-                        uploaded_bytes=file_size,
+                        uploaded_bytes=0,
                         total_bytes=file_size,
                         speed="existing resource",
-                        status="completed"
+                        status="skipped"
                     )
                     return {"media_uuid": "EXISTING_RESOURCE_SKIPPED", "skipped": True}
 

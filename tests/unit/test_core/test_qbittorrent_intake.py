@@ -475,3 +475,14 @@ def test_success_clears_persistent_automatic_retry(db, qb, handler):
     assert not task["auto_retry"] and task["resolved"]
     qb._poll_once()
     assert handler._upload_queue.empty()
+
+
+def test_skipped_task_stays_terminal_after_restart(db, handler, qb):
+    path = str(Path(qb.torrent["save_path"]) / "Film.mkv")
+    task = prepare_task(path, ["emos"])
+    operations.record_task(path, "skipped", task_id=task)
+    with session.get_session_local()() as conn:
+        recover_interrupted(conn)
+    assert handler.enqueue_qb_file(path, qb)
+    assert handler._upload_queue.empty()
+    assert get_file_task(path, ["emos"])["status"] == "skipped"

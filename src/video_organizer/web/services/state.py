@@ -25,7 +25,7 @@ class TaskInfo:
     """任务信息"""
 
     file_path: str
-    status: str  # queued, processing, uploading, completed, failed
+    status: str  # queued, processing, uploading, completed, skipped, failed
     error_message: Optional[str] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
@@ -42,7 +42,7 @@ class UploadProgress:
     uploaded_bytes: int
     total_bytes: int
     speed: str  # 如 "5.2 MB/s"
-    status: str  # uploading, completed, failed
+    status: str  # uploading, completed, skipped, failed
     error: Optional[str] = None
     start_time: Optional[datetime] = None
     last_update: Optional[datetime] = None
@@ -325,16 +325,11 @@ class StateManager:
 
             # 获取处理状态
             if hasattr(handler, "_processing_files"):
-                status.processing_count = len(handler._processing_files)
+                status.processing_count = len(self.get_processing_files())
 
             if hasattr(handler, "_uploading_files"):
                 status.uploading_count = len(handler._uploading_files)
 
-            runtime_completed = (
-                len(handler._uploaded_files)
-                if hasattr(handler, "_uploaded_files")
-                else 0
-            )
             runtime_failed = (
                 len(handler._failed_files) if hasattr(handler, "_failed_files") else 0
             )
@@ -346,7 +341,7 @@ class StateManager:
                 status.failed_count = db_counts.get("failed", 0)
                 status.resolved_count = db_counts.get("resolved", 0)
             except Exception:
-                status.completed_count = runtime_completed
+                status.completed_count = len(self.get_completed_files())
                 status.failed_count = runtime_failed
 
         except Exception as e:
@@ -376,7 +371,11 @@ class StateManager:
         try:
             handler = self._video_handler
             if hasattr(handler, "_processing_files"):
-                return list(handler._processing_files)
+                return list(
+                    handler._processing_files.difference(
+                        getattr(handler, "_queued_files", set())
+                    )
+                )
         except Exception as e:
             self._logger.error(f"获取处理中文件失败: {e}")
 
@@ -397,18 +396,10 @@ class StateManager:
         return []
 
     def get_completed_files(self) -> List[str]:
-        """获取已完成的文件列表"""
-        if self._video_handler is None:
-            return []
-
-        try:
-            handler = self._video_handler
-            if hasattr(handler, "_uploaded_files"):
-                return list(handler._uploaded_files)
-        except Exception as e:
-            self._logger.error(f"获取已完成文件失败: {e}")
-
-        return []
+        """按持久任务状态返回实际完成的文件，避免把排重跳过算作完成。"""
+        return list(
+            dict.fromkeys(item["path"] for item in db_get_completed(limit=10000))
+        )
 
     def get_failed_files(self) -> Dict[str, str]:
         """获取失败的文件及错误信息"""
@@ -417,31 +408,11 @@ class StateManager:
         }
 
     def get_completed_with_time(self) -> List[Dict]:
-        """
-        获取已完成的文件列表（含时间戳）
-
-        合并内存状态和数据库记录，返回带完成时间的列表。
-        """
+        """完成列表以持久结果为准，内存中的已处理集合也包含跳过的文件。"""
         seen = {}
-        # 数据库记录优先（有时间戳）
-        try:
-            db_items = db_get_completed(limit=500)
-            for item in db_items:
-                seen[item["path"]] = item["time"]
-        except Exception:
-            pass
-        # 内存状态补充（实时数据）
-        try:
-            if self._video_handler and hasattr(self._video_handler, "_uploaded_files"):
-                for p in list(self._video_handler._uploaded_files)[-500:]:
-                    if p not in seen:
-                        seen[p] = None
-        except Exception:
-            pass
-        # 按时间倒序
-        result = [{"path": p, "time": t} for p, t in seen.items()]
-        result.sort(key=lambda x: x["time"] or "", reverse=True)
-        return result[:200]
+        for item in db_get_completed(limit=500):
+            seen.setdefault(item["path"], item["time"])
+        return [{"path": path, "time": time} for path, time in seen.items()][:200]
 
     def get_failed_with_time(self) -> Dict[str, Dict]:
         """
@@ -565,7 +536,7 @@ def report_upload_progress(
         uploaded_bytes: 已上传字节数
         total_bytes: 总字节数
         speed: 上传速度字符串
-        status: 状态 (uploading, completed, failed)
+        status: 状态 (uploading, completed, skipped, failed)
         error: 错误信息（如果失败）
     """
     state = get_state_manager()

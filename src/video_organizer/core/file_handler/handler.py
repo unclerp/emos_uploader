@@ -676,6 +676,10 @@ class VideoFileHandler:
                     self._upload_queue.task_done()
                     continue
 
+                # 出队即开始处理；排队集合只保留尚未被工作线程接收的文件。
+                with self._queue_lock:
+                    self._queued_files.discard(file_path)
+
                 # 为当前文件的处理设置日志标识，之后产生的日志都会带上 [编号 文件名]
                 set_file_id(file_path)
 
@@ -721,10 +725,10 @@ class VideoFileHandler:
                     if self._parent_monitor:
                         self._parent_monitor._retry_files.add(file_path)
                 finally:
-                    # 清理状态（不持有锁，避免阻塞其他线程）
                     clear_file_id()
-                    self._queued_files.discard(file_path)
-                    self._processing_files.discard(file_path)
+                    # 持锁释放占位，避免同一路径重新入队时被旧任务误清理。
+                    with self._queue_lock:
+                        self._processing_files.discard(file_path)
 
                     self._upload_queue.task_done()
                     # 显式垃圾回收
@@ -776,11 +780,19 @@ class VideoFileHandler:
             )
 
             if upload_result:
-                console_log(f"\n🎉 视频上传成功!")
+                skipped = bool(upload_result.get("skipped"))
+                console_log(
+                    "\n⏸️ 资源已存在，已跳过上传" if skipped else "\n🎉 视频上传成功!"
+                )
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
                 self._failed_files.pop(file_path, None)
-                self._record_task(file_path, "completed", end_time=datetime.now())
+                self._record_task(
+                    file_path,
+                    "skipped" if skipped else "completed",
+                    error_message="资源已存在，重复上传已跳过" if skipped else None,
+                    end_time=datetime.now(),
+                )
 
                 # 如果配置了上传后删除文件，执行删除操作
                 if self.delete_after_upload:
@@ -871,7 +883,7 @@ class VideoFileHandler:
             ):
                 return True
             task = get_file_task(file_path, self.upload_targets)
-            if task and task["status"] == "completed":
+            if task and task["status"] in ("completed", "skipped"):
                 return True
             if task and task["status"] == "failed":
                 interrupted = task["error"] == "服务重启，前次处理未完成，请重试"
@@ -978,9 +990,15 @@ class VideoFileHandler:
             return True
         else:
             # 同步直接处理
-            return self._process_file_internal(
-                file_path, tracking_task_id=tracking_task_id
-            )
+            with self._queue_lock:
+                self._queued_files.discard(file_path)
+            try:
+                return self._process_file_internal(
+                    file_path, tracking_task_id=tracking_task_id
+                )
+            finally:
+                with self._queue_lock:
+                    self._processing_files.discard(file_path)
 
     def _process_file_internal(
         self, file_path, worker_id=0, tmdb_override=None, tracking_task_id=None
@@ -998,12 +1016,14 @@ class VideoFileHandler:
         if manager is None:
             task = copy.copy(self)
             task._requested_task_id = tracking_task_id
+            task._caller_owns_processing = True
             task._manual_tmdb_override = tmdb_override
             return task._process_file_snapshot(file_path, worker_id)
 
         with manager.lease() as generation:
             task = copy.copy(generation.handler)
             task._requested_task_id = tracking_task_id
+            task._caller_owns_processing = True
             task._manual_tmdb_override = tmdb_override
             # 防止一项任务的规则字段锁污染同代其他线程。
             task.renamer = copy.copy(generation.handler.renamer)
@@ -1417,8 +1437,9 @@ class VideoFileHandler:
         finally:
             # 清除当前文件的日志标识
             clear_file_id()
-            # 从处理中集合移除
-            self._processing_files.discard(file_path)
+            # 外层队列或同步调用者最后释放占位，避免旧任务清理新任务。
+            if not getattr(self, "_caller_owns_processing", False):
+                self._processing_files.discard(file_path)
 
     def _execute_upload(
         self,
@@ -1506,7 +1527,7 @@ class VideoFileHandler:
                         if upload_results["emos"]:
                             if upload_results["emos"].get("skipped"):
                                 console_log(
-                                    f"\n⏸️ [线程#{worker_id}] Emos 检测到已存在完全相同大小的已完成资源，跳过上传并标记成功!"
+                                    f"\n⏸️ [线程#{worker_id}] Emos 检测到资源已存在，已跳过上传"
                                 )
                             else:
                                 console_log(f"\n🎉 [线程#{worker_id}] Emos上传成功!")
@@ -1786,11 +1807,26 @@ class VideoFileHandler:
             )
 
             if all_success:
-                console_log(f"\n🎉 [线程#{worker_id}] 所有云盘上传成功!")
+                # 所有目标均排重跳过才算已跳过；混合实际上传仍算完成，失败优先。
+                all_skipped = all(
+                    isinstance(upload_results[target], dict)
+                    and upload_results[target].get("skipped")
+                    for target in required_targets
+                )
+                console_log(
+                    f"\n⏸️ [线程#{worker_id}] 资源已存在，所有目标均已跳过"
+                    if all_skipped
+                    else f"\n🎉 [线程#{worker_id}] 所有云盘上传成功!"
+                )
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
                 self._failed_files.pop(file_path, None)
-                self._record_task(file_path, "completed", end_time=datetime.now())
+                self._record_task(
+                    file_path,
+                    "skipped" if all_skipped else "completed",
+                    error_message="资源已存在，重复上传已跳过" if all_skipped else None,
+                    end_time=datetime.now(),
+                )
                 self._uploading_files.discard(file_path)
 
                 # 执行 emya 数据库入库（如果启用）
@@ -1912,7 +1948,11 @@ class VideoFileHandler:
                 # 更新日志
                 log_success(
                     self.logger,
-                    "文件元数据获取并上传成功",
+                    (
+                        "资源已存在，已跳过上传"
+                        if all_skipped
+                        else "文件元数据获取并上传成功"
+                    ),
                     {
                         "original_path": file_path,
                         "tmdb_id": tmdb_id,
@@ -1920,7 +1960,8 @@ class VideoFileHandler:
                         "title": title,
                         "season_episode": season_episode,
                         "matched_item_id": matched_item_id,
-                        "upload_success": True,
+                        "upload_success": not all_skipped,
+                        "upload_skipped": all_skipped,
                         "upload_targets": self.upload_targets,
                         "emos_uuid": (
                             upload_results.get("emos", {}).get("media_uuid")
@@ -2069,11 +2110,17 @@ class VideoFileHandler:
             return True
         else:
             # 同步直接处理
-            return self._process_file_internal(
-                file_path,
-                tmdb_override=tmdb_override,
-                tracking_task_id=tracking_task_id,
-            )
+            with self._queue_lock:
+                self._queued_files.discard(file_path)
+            try:
+                return self._process_file_internal(
+                    file_path,
+                    tmdb_override=tmdb_override,
+                    tracking_task_id=tracking_task_id,
+                )
+            finally:
+                with self._queue_lock:
+                    self._processing_files.discard(file_path)
 
     def stop_upload_queue(self):
         """停止上传队列处理线程"""

@@ -130,7 +130,7 @@ def serialize(task):
         "targets": task.targets,
         "attempt_count": task.attempt_count,
         "failure_count": task.failure_count,
-        "resolved": task.status == "completed" and task.failure_count > 0,
+        "resolved": task.status in ("completed", "skipped") and task.failure_count > 0,
     }
 
 
@@ -138,7 +138,8 @@ def query_tasks(db, status=None, search=None):
     query = db.query(UploadTask).filter_by(cleared=False)
     if status == "resolved":
         query = query.filter(
-            UploadTask.status == "completed", UploadTask.failure_count > 0
+            UploadTask.status.in_(["completed", "skipped"]),
+            UploadTask.failure_count > 0,
         )
     elif status == "issues":
         query = query.filter(UploadTask.failure_count > 0)

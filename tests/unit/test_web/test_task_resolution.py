@@ -307,3 +307,130 @@ def test_actual_legacy_sqlite_schema_upgrade(tmp_path, monkeypatch):
     with session.get_session_local()() as conn:
         assert conn.query(TaskHistory).one().error_message == "old timeout"
     session._engine.dispose()
+
+
+def test_dequeued_task_leaves_waiting_list_while_next_task_stays_queued(db, file):
+    from video_organizer.web.services.state import StateManager
+
+    h = handler()
+    h._queue_running = True
+    h._worker_condition = threading.Condition()
+    active, release = threading.Event(), threading.Event()
+    pending = file + ".next"
+    h._queued_files.update([file, pending])
+    h._processing_files.update([file, pending])
+    h._upload_queue.put(file)
+    h._upload_queue.put(pending)
+
+    def process(*args, **kwargs):
+        active.set()
+        assert release.wait(5)
+        h._queue_running = False
+
+    h._process_file_internal = process
+    state = StateManager()
+    state._video_handler = h
+    worker = threading.Thread(target=h._worker_process_queue, args=(1,))
+    worker.start()
+    try:
+        assert active.wait(5)
+        assert state.get_queued_files() == [pending]
+        assert state.get_processing_files() == [file]
+        status = state.get_system_status()
+        assert status.queue_size == status.processing_count == 1
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert state.get_processing_files() == []
+    assert state.get_queued_files() == [pending]
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_synchronous_processing_is_never_in_waiting_list(db, file, force):
+    h = handler()
+    h._use_queue = False
+    h._is_file_complete = Mock(return_value=True)
+    h._is_subtitle_file = Mock(return_value=False)
+    h._is_video_file = Mock(return_value=True)
+
+    def process(path, **kwargs):
+        assert path not in h._queued_files
+        assert path in h._processing_files
+        return True
+
+    h._process_file_internal = process
+    assert h.force_process_file(file) if force else h._process_file(file)
+
+
+@pytest.mark.parametrize(
+    "other,expected",
+    [
+        ("unused", "skipped"),
+        ({"skipped": True}, "skipped"),
+        ({"fileid": "new"}, "completed"),
+        (None, "failed"),
+    ],
+)
+def test_duplicate_result_persists_distinct_outcome(
+    db, file, monkeypatch, other, expected
+):
+    from pathlib import Path
+    from video_organizer.web.services.state import StateManager
+    import video_organizer.upload.emos_uploader as emos
+
+    h = handler()
+    if other != "unused":
+        h.upload_targets.append("p123")
+    h._tracked_task_id = prepare_task(file, h.upload_targets)
+    h.emos_auth_token, h.emos_base_url = "test", "https://example.invalid"
+    h.emos_chunk_size_mb, h.emos_max_workers = 100, 3
+    h.telegram_config, h.emos_file_storage, h.emos_skip_existing_media = {}, "s3", True
+    h.p123_token, h.p123_username = "test", ""
+    h.p123_uploader = Mock()
+    h.p123_uploader.upload_video.return_value = other
+    h.renamer = Mock()
+    h.renamer.generate_new_path.return_value = Path("Film/film.mkv")
+    h.emya_enabled, h.delete_after_upload, h._parent_monitor = False, False, None
+    h._cleanup_old_records = Mock()
+    uploader = Mock()
+    uploader.upload_video.return_value = {"skipped": True, "media_uuid": "existing"}
+    monkeypatch.setattr(emos, "RobustEmosVideoUploader", Mock(return_value=uploader))
+
+    h._execute_upload(file, "ve", "42", 1, 42, "tv", "Film", "S01E01", {})
+    detail = get_attempts(h._tracked_task_id)
+    assert detail["task"]["status"] == expected
+    assert detail["attempts"][0]["status"] == expected
+    assert ops.get_tasks_paginated(expected)[1] == 1
+    state = StateManager()
+    state._video_handler = h
+    assert bool(state.get_completed_files()) == (expected == "completed")
+    assert bool(state.get_completed_with_time()) == (expected == "completed")
+    assert state.get_system_status().completed_count == (expected == "completed")
+    assert file not in h._uploading_files
+    assert ops.get_recent_activity_paginated()[0][0]["status"] == expected
+
+
+def test_failure_then_duplicate_is_resolved_without_claiming_uploaded(db, file):
+    task = prepare_task(file, ["emos"])
+    result(file, task)
+    result(file, task, "skipped")
+    assert get_attempts(task)["task"]["resolved"]
+    assert ops.get_tasks_paginated("resolved")[0][0]["status"] == "skipped"
+    assert ops.get_task_counts() == {"completed": 0, "failed": 0, "resolved": 1}
+    assert ops.get_failed_tasks() == {}
+
+
+def test_skipped_result_available_in_paginated_api_and_attempt_history(api, file):
+    client, h = api
+    task = prepare_task(file, ["emos"])
+    result(file, task, "skipped")
+    assert (
+        client.get("/tasks/list?status=skipped").json()["items"][0]["status"]
+        == "skipped"
+    )
+    assert client.get("/tasks/list?status=completed").json()["total"] == 0
+    assert (
+        client.get(f"/tasks/history/{task}").json()["attempts"][0]["status"]
+        == "skipped"
+    )

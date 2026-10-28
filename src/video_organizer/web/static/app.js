@@ -383,7 +383,7 @@ async function updateTaskList() {
 
     // 已完成/失败：使用分页 API
     try {
-        const data = await loadTaskListPaginated(state.taskPage, state.taskPageSize, tab === 'failed' ? el.taskIssueFilter.value : 'completed', state.taskSearch);
+        const data = await loadTaskListPaginated(state.taskPage, state.taskPageSize, tab === 'failed' ? el.taskIssueFilter.value : tab, state.taskSearch);
         const items = data.items || [];
         state.taskTotal = data.total || 0;
 
@@ -393,7 +393,7 @@ async function updateTaskList() {
             state.visibleTasks = Object.fromEntries(items.map(item => [item.id, item]));
             el.taskList.innerHTML = items.map(file => `<tr>
                 <td class="col-path" style="font-family:monospace;font-size:0.8125rem">${escapeHtml(file.path)}<br><small>目标：${escapeHtml(file.targets === 'unknown' ? '历史记录（目标未知）' : file.targets)}</small></td>
-                <td class="col-status"><span class="badge ${file.status === 'completed' ? 'badge-success' : file.status === 'failed' ? 'badge-danger' : 'badge-warning'}">${taskStatusLabel(file)}</span>${file.error ? `<br><small>${escapeHtml(file.error)}</small>` : ''}<br><small>已尝试 ${file.attempt_count} 次 · 失败 ${file.failure_count} 次</small></td>
+                <td class="col-status"><span class="badge ${file.status === 'skipped' ? 'badge-info' : 'badge-' + activityStatusTone(file.status)}">${taskStatusLabel(file)}</span>${file.error ? `<br><small>${escapeHtml(file.error)}</small>` : ''}<br><small>已尝试 ${file.attempt_count} 次 · 失败 ${file.failure_count} 次</small></td>
                 <td class="col-time">${formatRelativeTime(file.time)}</td>
                 <td class="col-actions"><button class="btn btn-secondary btn-sm" onclick="showTaskHistory(${file.id})">尝试历史</button>${file.status === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryTrackedTask(${file.id})">重试</button><button class="btn btn-danger btn-sm" onclick="clearTrackedTask(${file.id})">清除</button>` : ''}</td>
             </tr>`).join('');
@@ -448,9 +448,9 @@ async function updateRecentActivity() {
             el.recentActivity.innerHTML = `<div class="empty-state"><p>暂无数据</p></div>`;
         } else {
             el.recentActivity.innerHTML = items.map((t, i) => `<div class="activity-item" style="animation-delay:${i * 30}ms">
-                <div class="activity-dot ${t.status === 'completed' ? 'activity-dot-success' : 'activity-dot-danger'}"></div>
+                <div class="activity-dot activity-dot-${activityStatusTone(t.status)}"></div>
                 <div class="activity-path" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
-                <div class="activity-status ${t.status === 'completed' ? 'activity-status-success' : 'activity-status-danger'}">${taskStatusLabel(t)}</div>
+                <div class="activity-status activity-status-${activityStatusTone(t.status)}">${taskStatusLabel(t)}</div>
                 <div class="activity-time">${formatRelativeTime(t.time)}</div>
             </div>`).join('');
         }
@@ -1461,7 +1461,7 @@ function handleDashboardUpdate(data) {
         }
     }
     if (data.type === 'update' && state.dashboardResolved !== undefined && (data.stats?.resolved || 0) > state.dashboardResolved) {
-        showToast('有上传任务重试成功，原失败已解决', 'success');
+        showToast('有任务的原失败已解决', 'success');
     }
     if (data.stats) state.dashboardResolved = data.stats.resolved || 0;
     if (document.getElementById('page-tasks')?.classList.contains('active')) updateTaskList();
@@ -1473,9 +1473,9 @@ function handleDashboardUpdate(data) {
             el.recentActivity.innerHTML = `<div class="empty-state"><p>暂无数据</p></div>`;
         } else {
             el.recentActivity.innerHTML = items.map((t, i) => `<div class="activity-item" style="animation-delay:${i * 30}ms">
-                <div class="activity-dot ${t.status === 'completed' ? 'activity-dot-success' : 'activity-dot-danger'}"></div>
+                <div class="activity-dot activity-dot-${activityStatusTone(t.status)}"></div>
                 <div class="activity-path" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
-                <div class="activity-status ${t.status === 'completed' ? 'activity-status-success' : 'activity-status-danger'}">${taskStatusLabel(t)}</div>
+                <div class="activity-status activity-status-${activityStatusTone(t.status)}">${taskStatusLabel(t)}</div>
                 <div class="activity-time">${formatRelativeTime(t.time)}</div>
             </div>`).join('');
         }
@@ -1559,7 +1559,7 @@ async function loadUploadProgress() {
 function handleUploadProgressUpdate(data) {
     const { file_path, filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error } = data;
     uploadState.progresses[file_path] = { filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error, timestamp: Date.now() };
-    if (status === 'completed' || status === 'failed') {
+    if (['completed', 'skipped', 'failed'].includes(status)) {
         setTimeout(() => { delete uploadState.progresses[file_path]; updateUploadProgressList(); }, 5000);
     }
     updateUploadProgressList();
@@ -1585,6 +1585,7 @@ function updateUploadProgressList() {
     el.uploadProgressList.innerHTML = progresses.map(p => {
         const statusBadge = p.status === 'uploading' ? '<span class="badge badge-warning">上传中</span>'
             : p.status === 'completed' ? '<span class="badge badge-success">已完成</span>'
+            : p.status === 'skipped' ? '<span class="badge badge-info">已跳过</span>'
             : p.status === 'failed' ? '<span class="badge badge-danger">失败</span>' : '';
         const uploaderNames = { 'cloud189': '天翼云盘', 'yun139': '139云盘', 'p123': '123云盘', 'emos': 'Emos' };
         const pct = Math.min(100, Math.max(0, p.progress || 0));
@@ -2168,7 +2169,12 @@ async function runRecycleClean(provider, dryRun) {
 }
 
 
+function activityStatusTone(status) {
+    return {completed: 'success', failed: 'danger', queued: 'warning', processing: 'warning', uploading: 'warning', skipped: 'muted'}[status] || 'muted';
+}
+
 function taskStatusLabel(task) {
+    if (task.status === 'skipped') return task.resolved ? '已跳过 · 已解决' : '已跳过';
     if (task.resolved) return '重试成功 · 已解决';
     return {completed:'已完成', failed:task.failure_count > 1 ? '重试失败 · 未解决' : '上传失败 · 未解决', queued:task.failure_count ? '等待重试' : '队列中', processing:task.failure_count ? '重试处理中' : '处理中', uploading:task.failure_count ? '重试上传中' : '上传中'}[task.status] || task.status;
 }
@@ -2192,7 +2198,7 @@ async function showTaskHistory(id) {
         const data = await apiRequest(`/tasks/history/${id}`);
         el.modalTitle.textContent = taskStatusLabel(data.task);
         el.modalFooter.style.display = 'flex';
-        el.modalBody.innerHTML = `<p style="overflow-wrap:anywhere">${escapeHtml(data.task.path)}</p><p>目标：${escapeHtml(data.task.targets === 'unknown' ? '历史记录（目标未知）' : data.task.targets)}</p><p>共尝试 ${data.task.attempt_count} 次，失败 ${data.task.failure_count} 次</p><ol>${data.attempts.map((a, i) => `<li style="margin:12px 0">第 ${i+1} 次：${a.status === 'completed' ? '成功' : '失败'} · ${escapeHtml(a.time ? new Date(a.time).toLocaleString() : '')}${a.error ? `<br><span style="overflow-wrap:anywhere">${escapeHtml(a.error)}</span>` : ''}</li>`).join('')}</ol>`;
+        el.modalBody.innerHTML = `<p style="overflow-wrap:anywhere">${escapeHtml(data.task.path)}</p><p>目标：${escapeHtml(data.task.targets === 'unknown' ? '历史记录（目标未知）' : data.task.targets)}</p><p>共尝试 ${data.task.attempt_count} 次，失败 ${data.task.failure_count} 次</p><ol>${data.attempts.map((a, i) => `<li style="margin:12px 0">第 ${i+1} 次：${a.status === 'skipped' ? '已跳过' : a.status === 'completed' ? '成功' : '失败'} · ${escapeHtml(a.time ? new Date(a.time).toLocaleString() : '')}${a.error ? `<br><span style="overflow-wrap:anywhere">${escapeHtml(a.error)}</span>` : ''}</li>`).join('')}</ol>`;
         el.modalConfirmBtn.textContent = '关闭';
         el.modalConfirmBtn.onclick = hideModal;
         showModal();
