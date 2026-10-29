@@ -74,6 +74,9 @@ def create_app(
         except Exception as e:
             logger.warning(f"导入配置到数据库失败: {e}")
 
+    from ..notifications.telegram import get_dispatcher
+
+    get_dispatcher().configure(config.get("telegram", {}))
     app = FastAPI(
         title=title,
         version=version,

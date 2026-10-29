@@ -108,6 +108,9 @@ def prepare_logging(config):
             handler.setLevel(level)
             handler.setFormatter(TaskIdFormatter(LOG_FORMAT, DATE_FORMAT))
             handler.addFilter(TaskIdFilter())
+            from ...notifications.telegram import TelegramSecretFilter
+
+            handler.addFilter(TelegramSecretFilter())
         return handlers, level
     except Exception:
         for handler in handlers:
@@ -415,6 +418,9 @@ class LiveConfig:
             try:
                 config = with_llm_snapshot(normalize_config(config))
                 if self.current and config == self.current.config:
+                    from ...notifications.telegram import get_dispatcher
+
+                    get_dispatcher().configure(config.get("telegram", {}))
                     self.last_status, self.last_error = "applied", ""
                     return {
                         "applied": True,
@@ -448,6 +454,9 @@ class LiveConfig:
                         if old.tracker:
                             old.tracker.stop()
                     self.current = candidate
+                    from ...notifications.telegram import get_dispatcher
+
+                    get_dispatcher().configure(config.get("telegram", {}))
                     if self.monitor and candidate.monitor:
                         self.monitor.config = config
                         self.monitor.event_handler = candidate.handler

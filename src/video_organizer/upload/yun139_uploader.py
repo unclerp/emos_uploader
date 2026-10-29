@@ -53,6 +53,8 @@ def _report_upload_progress(
         pass  # Web 模块未加载时忽略
 
 
+from ..notifications.telegram import notified_upload, notify_progress, notify_channel
+
 class Yun139Uploader:
     """139云盘上传器（支持文件夹管理、TG通知和STRM生成）"""
 
@@ -247,7 +249,7 @@ class Yun139Uploader:
                     "contentHash": content_hash,
                     "uploadedParts": uploaded_parts
                 }
-                
+
                 with open(state_file, 'w', encoding='utf-8') as f:
                     json.dump(state, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -267,19 +269,19 @@ class Yun139Uploader:
         try:
             with self._get_state_lock(file_path):
                 state_file = self._get_state_file_path(file_path)
-                
+
                 if not os.path.exists(state_file):
                     return None
-                
+
                 with open(state_file, 'r', encoding='utf-8') as f:
                     state = json.load(f)
-                
+
                 # 验证 SHA256 是否一致（确保是同一文件）
                 if state.get("contentHash") != content_hash:
                     print(f"  [断点续传] 文件内容已变化，放弃断点续传")
                     self._clear_upload_state(file_path)
                     return None
-                
+
                 return state
         except Exception as e:
             print(f"  [WARNING] 加载上传状态失败: {e}")
@@ -312,7 +314,7 @@ class Yun139Uploader:
             文件夹ID，失败返回None
         """
         cache_key = f"{parent_id}_{folder_name}"
-        
+
         # 先检查缓存（无锁快速路径）
         if cache_key in self._folder_cache:
             return self._folder_cache[cache_key]
@@ -353,147 +355,28 @@ class Yun139Uploader:
 
     def _send_tg_progress(
         self,
-        file_path: str,
-        file_name: str,
-        progress_percent: float,
-        uploaded_mb: float,
-        total_mb: float,
-        speed_mbps: float = 0,
-        force: bool = False,
+        file_path,
+        file_name,
+        progress_percent,
+        uploaded_mb,
+        total_mb,
+        speed_mbps=0,
+        force=False,
     ):
-        """发送/更新 Telegram 进度消息"""
-        if not self.tg_bot_token or not self.tg_chat_id:
-            return
-
-        current_time = time.time()
-        msg_id = self._tg_message_ids.get(file_path)
-
-        # 限制更新频率
-        if (
-            not force
-            and msg_id is not None
-            and (current_time - self.tg_last_update_time) < self.tg_update_interval
-        ):
-            return
-
-        # 创建进度条
-        bar_length = 20
-        filled_length = min(int(bar_length * progress_percent / 100), bar_length)
-        bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
-        # 构建消息文本
-        message_text = (
-            f"📤 *上传进度 [139云]*\n\n"
-            f"文件: `{file_name}`\n"
-            f"进度: {progress_percent:.1f}%\n"
-            f"[{bar}]\n\n"
-            f"已上传: {uploaded_mb:.2f} MB / {total_mb:.2f} MB\n"
-            f"速度: {speed_mbps:.2f} MB/s"
+        return notify_progress(
+            self.telegram_config,
+            file_path,
+            "139云盘",
+            progress_percent,
+            f"已上传：{uploaded_mb:.2f} MB / {total_mb:.2f} MB\n速度：{speed_mbps:.2f} MB/s",
         )
 
-        try:
-            if msg_id is None:
-                # 发送新消息
-                url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
-                data = {
-                    "chat_id": self.tg_chat_id,
-                    "text": message_text,
-                    "parse_mode": "Markdown",
-                }
-                response = requests.post(url, json=data, timeout=10)
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("ok"):
-                        self._tg_message_ids[file_path] = result["result"]["message_id"]
-                        self.tg_last_update_time = current_time
-            else:
-                # 更新现有消息
-                url = f"https://api.telegram.org/bot{self.tg_bot_token}/editMessageText"
-                data = {
-                    "chat_id": self.tg_chat_id,
-                    "message_id": msg_id,
-                    "text": message_text,
-                    "parse_mode": "Markdown",
-                }
-                response = requests.post(url, json=data, timeout=10)
-                if response.status_code == 200:
-                    self.tg_last_update_time = current_time
-                elif response.status_code == 400:
-                    # 消息可能已被删除，尝试重新发送
-                    self._tg_message_ids[file_path] = None
-                    self._send_tg_progress(
-                        file_path, file_name, progress_percent, uploaded_mb, total_mb, speed_mbps, force=True
-                    )
-        except Exception:
-            pass
-
     def _send_tg_channel_message(self, message: str) -> bool:
-        """
-        发送消息到 TG 频道
+        from ..notifications.telegram import digest
 
-        Args:
-            message: 要发送的消息文本
-
-        Returns:
-            发送成功返回 True
-        """
-        if not self.tg_bot_token:
-            print(f"[DEBUG] TG频道: bot_token 未配置")
-            return False
-        if not self.tg_channel_chat_id:
-            print(f"[DEBUG] TG频道: channel_chat_id 未配置")
-            return False
-
-        # 格式化频道ID（参考123云盘实现）
-        tg_channel = self.tg_channel_chat_id
-        if tg_channel:
-            # 去除行尾注释（分号或井号后面的内容）
-            for sep in [';', '#']:
-                if sep in tg_channel:
-                    tg_channel = tg_channel.split(sep)[0]
-            tg_channel = tg_channel.strip()
-            # 自动添加 @ 前缀
-            if not tg_channel.startswith(('@', '-')):
-                tg_channel = f"@{tg_channel}"
-
-        try:
-            url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
-            
-            # 使用 data 参数（form-urlencoded）而不是 json，更兼容
-            data = {
-                "chat_id": tg_channel,
-                "text": message,
-            }
-            
-            # 打印完整的调试信息
-            print(f"\n{'='*60}")
-            print(f"[DEBUG] TG API 请求:")
-            print(f"URL: {url}")
-            print(f"chat_id: {tg_channel}")
-            print(f"text 长度: {len(message)} 字符")
-            print(f"text 内容:\n{message}")
-            print(f"{'='*60}\n")
-            
-            # 使用 data 参数发送 form-urlencoded 请求
-            response = requests.post(url, data=data, timeout=10)
-            print(f"[DEBUG] TG频道响应状态: {response.status_code}")
-            print(f"[DEBUG] TG频道响应内容: {response.text}")
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("ok"):
-                    print(f"[DEBUG] ✅ 发送成功!")
-                    return True
-                else:
-                    print(f"[DEBUG] TG频道错误: {result.get('description', 'unknown')}")
-                return result.get("ok", False)
-            else:
-                print(f"[提示] 请确保 Bot 已添加到频道并具有管理员权限")
-        except Exception as e:
-            print(f"[WARNING] 发送 TG 频道消息失败: {e}")
-            import traceback
-            traceback.print_exc()
-        return False
+        return notify_channel(
+            self.telegram_config, message, "yun139:" + digest(message)
+        )
 
     def _save_rapid_json(
         self,
@@ -552,7 +435,7 @@ class Yun139Uploader:
         """
         # 构建完整文件路径
         full_path = f"{folder_path}/{name}" if folder_path else name
-        
+
         # 构建 JSON 格式消息（纯文本，不用 Markdown）
         message = f'''{{
     "sha256": "{sha256}",
@@ -676,6 +559,7 @@ class Yun139Uploader:
             print(f"   ❌ 生成 STRM 文件失败: {e}")
             return None
 
+    @notified_upload("139云盘")
     def upload_video(
         self,
         file_path: str,
@@ -834,9 +718,9 @@ class Yun139Uploader:
                         folder_path=folder_path
                     )
                     if success:
-                        print(f"   📢 已发送上传完成消息到 TG 频道")
+                        print(f"   📢 已将频道通知提交到后台队列")
                     else:
-                        print(f"   ⚠️ 发送 TG 频道消息失败")
+                        print(f"   ⚠️ 频道通知未提交（请检查配置和通知开关）")
 
                 # 保存秒传信息到 JSON 文件
                 self._save_rapid_json(
@@ -1157,16 +1041,16 @@ class Yun139Uploader:
             if full_retry > 0:
                 print(f"\n  [重试] 第 {full_retry + 1} 次重新上传，已清除断点记录")
                 self._clear_upload_state(file_path)
-            
+
             result = self._do_upload(
                 parent_id, file_path, target_filename, progress_callback,
             )
-            
+
             if result is not None:
                 return result
-            
+
             print(f"\n  [ERROR] 上传失败，准备重试...")
-        
+
         print(f"\n  [ERROR] 上传失败，已重试 {max_full_retries} 次")
         return None
 
@@ -1202,7 +1086,7 @@ class Yun139Uploader:
         # 计算分片信息
         part_size = self.client._get_part_size(file_size)
         part_count = max(1, (file_size + part_size - 1) // part_size)
-        
+
         print(f"  [DEBUG] 分片计算: file_size={file_size}, part_size={part_size}, part_count={part_count}")
 
         part_infos = []
@@ -1220,7 +1104,7 @@ class Yun139Uploader:
         file_id = None
         upload_id = None
         uploaded_part_numbers = []
-        
+
         if saved_state:
             # 断点续传：复用已有的 fileId 和 uploadId
             file_id = saved_state.get("fileId")
@@ -1291,21 +1175,21 @@ class Yun139Uploader:
 
             file_id = upload_data['fileId']
             upload_id = upload_data['uploadId']
-            
+
             # 保存初始状态
             self._save_upload_state(file_path, file_id, upload_id, content_hash, [])
 
         # 获取未上传分片的上传地址
         upload_part_infos = []
-        
+
         # 过滤出未上传的分片
         pending_part_infos = [p for p in part_infos if p['partNumber'] not in uploaded_part_numbers]
-        
+
         if not pending_part_infos:
             print(f"  [断点续传] 所有分片已上传，直接完成上传")
         else:
             print(f"  [断点续传] 需要上传 {len(pending_part_infos)}/{part_count} 个分片")
-            
+
             # 获取未上传分片的上传地址（每批获取 100 个）
             for i in range(0, len(pending_part_infos), 100):
                 batch = pending_part_infos[i:i+100]
@@ -1332,36 +1216,36 @@ class Yun139Uploader:
                         return None
                     raise
                 upload_part_infos.extend(more_result['data']['partInfos'])
-            
+
             upload_part_infos = sorted(upload_part_infos, key=lambda x: x['partNumber'])
 
         # 上传分片（带进度条和重试机制）
         # 注意：139云盘要求分片按顺序上传，不支持并行
         print(f"\n📤 开始上传分片，共 {len(upload_part_infos)} 个分片")
-        
+
         uploaded_parts = []  # 记录已上传的分片信息（用于complete）
         max_retries = 3  # 每个分片最大重试次数
-        
+
         # 计算已上传字节数（用于进度条初始位置）
         initial_uploaded = 0
         for part_num in uploaded_part_numbers:
             part_idx = part_num - 1
             if 0 <= part_idx < len(part_infos):
                 initial_uploaded += part_infos[part_idx]['partSize']
-        
+
         with open(file_path, 'rb') as f:
             with tqdm(total=file_size, unit='B', unit_scale=True, desc="上传进度", ncols=80, initial=initial_uploaded) as pbar:
                 for part_info in upload_part_infos:
                     part_num = part_info['partNumber'] - 1
                     upload_url = part_info['uploadUrl']
-                    
+
                     # 跳过已上传的分片
                     if part_info['partNumber'] in uploaded_part_numbers:
                         continue
-                    
+
                     f.seek(part_num * part_size)
                     chunk_data = f.read(part_size)
-                    
+
                     # 上传分片（带重试）
                     headers = {
                         "Content-Type": "application/octet-stream",
@@ -1369,10 +1253,10 @@ class Yun139Uploader:
                         "Origin": "https://yun.139.com",
                         "Referer": "https://yun.139.com/"
                     }
-                    
+
                     upload_success = False
                     last_error = None
-                    
+
                     for retry in range(max_retries):
                         try:
                             response = requests.put(upload_url, data=chunk_data, headers=headers, timeout=300)
@@ -1415,29 +1299,29 @@ class Yun139Uploader:
                                         print(f"  [RETRY] 已重新获取上传URL")
                                 except Exception as refresh_error:
                                     print(f"  [WARNING] 重新获取上传URL失败: {refresh_error}")
-                    
+
                     if not upload_success:
                         print(f"\n  [ERROR] 分片 {part_info['partNumber']} 上传失败，已重试{max_retries}次: {last_error}")
                         return None  # 返回 None，让外层重试
-                    
+
                     # 更新已上传分片列表并保存进度
                     uploaded_part_numbers.append(part_info['partNumber'])
                     self._save_upload_state(file_path, file_id, upload_id, content_hash, uploaded_part_numbers)
-                    
+
                     pbar.update(len(chunk_data))
                     if progress_callback:
                         progress_callback(pbar.n, file_size)
-        
+
         # 完成上传
         print(f"\n  [DEBUG] 所有分片上传完成，调用 complete 接口")
-        
+
         complete_data = {
             "contentHash": content_hash,
             "contentHashAlgorithm": "SHA256",
             "fileId": file_id,
             "uploadId": upload_id,
         }
-        
+
         self.client._request("/hcy/file/complete", complete_data, is_personal=True)
 
         # 上传完成，清除断点续传状态文件

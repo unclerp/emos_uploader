@@ -188,3 +188,28 @@ class PostUploadAction(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.now
     )
+
+
+class TelegramDelivery(Base):
+    """通知最新状态和投递进度；只保存 Bot 指纹，不保存 Token。"""
+
+    __tablename__ = "telegram_delivery"
+    identity: Mapped[str] = mapped_column(String(64), primary_key=True)
+    bot_key: Mapped[str] = mapped_column(String(64), index=True)
+    scope: Mapped[str] = mapped_column(String(160), index=True)
+    chat_id: Mapped[str] = mapped_column(String(128))
+    thread_id: Mapped[str] = mapped_column(String(64), default="")
+    message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    text: Mapped[str] = mapped_column(Text)
+    terminal: Mapped[bool] = mapped_column(Boolean, default=False)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    delivered_revision: Mapped[int] = mapped_column(Integer, default=0)
+    pending: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    next_attempt_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.now
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.now
+    )

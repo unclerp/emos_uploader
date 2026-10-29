@@ -541,13 +541,16 @@ class TestRecycleCleanerFlow:
     def test_telegram_notify_sends_message(self, monkeypatch):
         sent = {}
 
-        def fake_post(url, json=None, timeout=None):
-            sent["url"] = url
-            sent["text"] = (json or {}).get("text")
+        def fake_submit(config, scope, text, **kwargs):
+            sent["config"] = config
+            sent["text"] = text
+            return True
 
         import video_organizer.core.recycle_cleaner.cleaner as cleaner_module
 
-        monkeypatch.setattr(cleaner_module.requests, "post", fake_post)
+        from types import SimpleNamespace
+        import video_organizer.notifications.telegram as telegram
+        monkeypatch.setattr(telegram, "get_dispatcher", lambda: SimpleNamespace(submit=fake_submit))
         cleaner = make_cleaner()
         cleaner.telegram_config = {"bot_token": "tok", "chat_id": "123"}
         cleaner.use_provider(
@@ -558,7 +561,7 @@ class TestRecycleCleanerFlow:
             ),
         )
         cleaner.clean_one("fake", reason="unit-test")
-        assert "bottok" in sent["url"]
+        assert sent["config"]["bot_token"] == "tok"
         assert "fake" in sent["text"]
         assert "unit-test" in sent["text"]
 

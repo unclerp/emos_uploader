@@ -17,6 +17,7 @@ def record_task(
     task_id: Optional[int] = None,
     targets: str = "unknown",
     auto_retry: bool = False,
+    telegram_config: Optional[Dict] = None,
 ) -> bool:
     """
     记录任务完成或失败到数据库
@@ -41,8 +42,24 @@ def record_task(
                 end_time=end_time,
             )
             db.add(record)
-            append_result(db, record, task_id, targets, auto_retry=auto_retry)
+            task = append_result(db, record, task_id, targets, auto_retry=auto_retry)
             db.commit()
+            notification = (
+                task.id,
+                task.file_path,
+                task.status,
+                task.error_message,
+                task.failure_count,
+                task.attempt_count,
+                task.targets,
+            )
+        if telegram_config:
+            try:
+                from ..notifications.telegram import notify_task_result
+
+                notify_task_result(telegram_config, *notification)
+            except Exception:
+                logger.warning("任务已保存，但通知暂存失败")
         # 通知仪表盘更新（惰性导入避免循环依赖）
         try:
             from ..web.services.state import get_state_manager

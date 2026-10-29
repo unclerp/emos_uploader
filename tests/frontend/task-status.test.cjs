@@ -110,3 +110,19 @@ for (const [action,legacy,expected] of [['',true,'delete'],['',false,'keep'],['k
         assert.equal(p.run("configEntries('processing').some(([k])=>k==='delete_after_upload')"), false);
     });
 }
+
+test('Telegram 页面显示独立通知开关和明确的额外频道说明', () => {
+    const p = page([]);
+    for (const [key,label] of [['notify_success','上传成功及重试解决'],['notify_failure','上传或识别失败'],['notify_skipped','重复资源跳过'],['notify_post_upload','上传后移动／删除及清理结果']]) {
+        const html=p.run(`renderConfigField('telegram',${JSON.stringify(key)},true)`);
+        assert.ok(html.includes(label));
+        assert.ok(html.includes(`name="telegram.${key}"`));
+    }
+    assert.match(p.run("renderConfigField('telegram','channel_chat_id','')"),/留空不推送额外频道/);
+});
+
+test('Telegram Token 字段保持密码输入，话题 ID 可留空', () => {
+    const p=page([]);
+    assert.match(p.run("renderConfigField('telegram','bot_token','')"),/type="password"/);
+    assert.match(p.run("renderConfigField('telegram','thread_id','')"),/普通聊天、群组或频道请留空/);
+});

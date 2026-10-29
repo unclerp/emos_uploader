@@ -32,6 +32,8 @@ def _report_progress(file_path, filename, uploader, progress, uploaded_bytes, to
         pass  # 忽略进度报告错误
 
 
+from ..notifications.telegram import notified_upload, notify_progress, notify_channel
+
 class Cloud189Uploader:
     """天翼云盘上传器"""
 
@@ -169,12 +171,12 @@ class Cloud189Uploader:
             # 个人云成功: {"res_code": 0, "id": xxx, ...}
             # 文件夹已存在: {"res_code": xxx, "res_message": "..."}
             folder_id = result.get("id") or result.get("folderId")
-            
+
             if folder_id:
                 self._folder_cache[cache_key] = str(folder_id)
                 print(f"[Cloud189] 创建文件夹成功: {folder_name} -> {folder_id}")
                 return str(folder_id)
-            
+
             # 检查是否有 res_code 错误
             if result.get("res_code") and result.get("res_code") != 0:
                 # 文件夹可能已存在，尝试查找
@@ -187,7 +189,7 @@ class Cloud189Uploader:
             # 个人云返回: {"fileListAO": {"fileFolderAO": [...]}}
             file_list_ao = files.get("fileListAO", {})
             folder_list = file_list_ao.get("folderList", []) or file_list_ao.get("fileFolderAO", [])
-            
+
             print(f"[Cloud189] 找到 {len(folder_list)} 个文件夹")
             for item in folder_list:
                 if item.get("name") == folder_name:
@@ -236,100 +238,23 @@ class Cloud189Uploader:
                 return f"{safe_name}/Season {int(season):02d}"
             return safe_name
 
-    def _send_tg_message(self, text: str, message_id: Optional[int] = None) -> Optional[int]:
-        """发送 Telegram 消息"""
-        if not self.tg_bot_token or not self.tg_chat_id:
+    def _send_tg_message(self, text: str, file_path=None):
+        # 最终状态由上传返回值或任务提交结果确定；此入口只发送中间进度。
+        if not file_path or text.startswith(("✅", "⚡", "❌")):
             return None
+        from ..notifications.telegram import get_dispatcher
 
-        try:
-            url = f"https://api.telegram.org/bot{self.tg_bot_token}"
-            if message_id:
-                resp = requests.post(
-                    f"{url}/editMessageText",
-                    json={"chat_id": self.tg_chat_id, "message_id": message_id, "text": text},
-                    timeout=10,
-                )
-            else:
-                resp = requests.post(
-                    f"{url}/sendMessage",
-                    json={"chat_id": self.tg_chat_id, "text": text},
-                    timeout=10,
-                )
-            result = resp.json()
-            if result.get("ok"):
-                return result.get("result", {}).get("message_id")
-        except Exception as e:
-            print(f"[Cloud189] TG 通知失败: {e}")
-
-        return message_id
+        config, scope, managed = get_dispatcher().context(
+            self.telegram_config, file_path
+        )
+        return get_dispatcher().submit(config, scope, text, terminal=False)
 
     def _send_tg_channel_message(self, message: str) -> bool:
-        """
-        发送消息到 TG 频道
+        from ..notifications.telegram import digest
 
-        Args:
-            message: 要发送的消息文本
-
-        Returns:
-            发送成功返回 True
-        """
-        if not self.tg_bot_token:
-            print(f"[Cloud189] TG频道: bot_token 未配置")
-            return False
-        if not self.tg_channel_chat_id:
-            print(f"[Cloud189] TG频道: channel_chat_id 未配置")
-            return False
-
-        # 格式化频道ID（参考123云盘实现）
-        tg_channel = self.tg_channel_chat_id
-        if tg_channel:
-            # 去除行尾注释（分号或井号后面的内容）
-            for sep in [';', '#']:
-                if sep in tg_channel:
-                    tg_channel = tg_channel.split(sep)[0]
-            tg_channel = tg_channel.strip()
-            # 自动添加 @ 前缀
-            if not tg_channel.startswith(('@', '-')):
-                tg_channel = f"@{tg_channel}"
-
-        try:
-            url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
-            
-            # 使用 data 参数（form-urlencoded）而不是 json
-            data = {
-                "chat_id": tg_channel,
-                "text": message,
-            }
-            
-            # 打印完整的调试信息
-            print(f"\n{'='*60}")
-            print(f"[Cloud189] TG API 请求:")
-            print(f"URL: {url}")
-            print(f"chat_id: {tg_channel}")
-            print(f"text 长度: {len(message)} 字符")
-            print(f"text 内容:\n{message}")
-            print(f"{'='*60}\n")
-            
-            # 使用 data 参数发送 form-urlencoded 请求
-            response = requests.post(url, data=data, timeout=10)
-            print(f"[Cloud189] TG频道响应状态: {response.status_code}")
-            print(f"[Cloud189] TG频道响应内容: {response.text}")
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("ok"):
-                    print(f"[Cloud189] ✅ 发送成功!")
-                    return True
-                else:
-                    print(f"[Cloud189] TG频道错误: {result.get('description', 'unknown')}")
-                return result.get("ok", False)
-            else:
-                print(f"[提示] 请确保 Bot 已添加到频道并具有管理员权限")
-        except Exception as e:
-            print(f"[Cloud189] 发送 TG 频道消息失败: {e}")
-            import traceback
-            traceback.print_exc()
-        return False
+        return notify_channel(
+            self.telegram_config, message, "cloud189:" + digest(message)
+        )
 
     def _send_upload_complete_to_channel(
         self,
@@ -356,7 +281,7 @@ class Cloud189Uploader:
         """
         # 构建完整文件路径
         full_path = f"{folder_path}/{name}" if folder_path else name
-        
+
         # 构建 JSON 格式消息（纯文本，不用 Markdown）
         message = f'''{{
     "md5": "{md5}",
@@ -367,6 +292,7 @@ class Cloud189Uploader:
 }}'''
         return self._send_tg_channel_message(message)
 
+    @notified_upload("天翼云盘")
     def upload_video(
         self,
         file_path: str,
@@ -423,9 +349,7 @@ class Cloud189Uploader:
 
         # 发送 TG 开始通知
         tg_text = f"☁️ [天翼云盘-{location_str}] 开始上传\n📁 {original_file_name}\n📊 {file_size / 1024 / 1024:.2f} MB"
-        tg_msg_id = self._send_tg_message(tg_text)
-        if tg_msg_id:
-            self._tg_message_ids[file_path] = tg_msg_id
+        self._send_tg_message(tg_text, file_path)
 
         try:
             # 构建目录路径
@@ -441,7 +365,7 @@ class Cloud189Uploader:
                 now = time.time()
                 elapsed = now - start_time
                 speed = file_size * percent / 100 / elapsed / 1024 / 1024 if elapsed > 0 else 0
-                
+
                 # 报告进度到 Web 后台
                 _report_progress(
                     file_path=abs_path,
@@ -453,7 +377,7 @@ class Cloud189Uploader:
                     speed=f"{speed:.2f} MB/s",
                     status="uploading",
                 )
-                
+
                 # 更新 Telegram 消息
                 if now - self.tg_last_update_time >= self.tg_update_interval:
                     self.tg_last_update_time = now
@@ -462,7 +386,7 @@ class Cloud189Uploader:
                         f"📁 {original_file_name}\n"
                         f"📊 {percent}% - {speed:.2f} MB/s"
                     )
-                    self._send_tg_message(tg_text, self._tg_message_ids.get(file_path))
+                    self._send_tg_message(tg_text, file_path)
 
             start_time = time.time()
 
@@ -502,7 +426,7 @@ class Cloud189Uploader:
                 f"📊 {file_size / 1024 / 1024:.2f} MB\n"
                 f"⏱️ {elapsed:.1f}s @ {speed:.2f} MB/s"
             )
-            self._send_tg_message(tg_text, self._tg_message_ids.get(file_path))
+            self._send_tg_message(tg_text, file_path)
 
             # 尝试获取下载链接
             download_url = None
@@ -576,9 +500,9 @@ class Cloud189Uploader:
                     folder_path=folder_path
                 )
                 if success:
-                    print(f"[Cloud189] 已发送上传完成消息到 TG 频道")
+                    print(f"[Cloud189] 已将频道通知提交到后台队列")
                 else:
-                    print(f"[Cloud189] ⚠️ 发送 TG 频道消息失败")
+                    print(f"[Cloud189] ⚠️ 频道通知未提交（请检查配置和通知开关）")
 
             return {
                 "file_id": result.user_file_id,
@@ -593,23 +517,23 @@ class Cloud189Uploader:
 
         except Exception as e:
             error_msg = str(e)
-            
+
             # 检查是否是频率限制或服务暂时不可用，自动重试
             retry_keywords = ['服务暂时不可用', '系统管理员', '频率', '限流', 'too many', 'rate limit']
             should_retry = any(keyword in error_msg.lower() for keyword in retry_keywords)
-            
+
             if should_retry:
                 max_retries = 3
                 for retry_count in range(max_retries):
                     wait_time = 30 * (retry_count + 1)  # 30s, 60s, 90s
                     print(f"[Cloud189] 服务暂时不可用，{wait_time}秒后重试 ({retry_count + 1}/{max_retries})...")
                     time.sleep(wait_time)
-                    
+
                     try:
                         # 更新 TG 消息
                         tg_text = f"🔄 [天翼云盘] 重试上传中...\n📁 {original_file_name}"
-                        self._send_tg_message(tg_text, self._tg_message_ids.get(file_path))
-                        
+                        self._send_tg_message(tg_text, file_path)
+
                         start_time = time.time()
                         result = self.client.upload_file(
                             file_path=abs_path,
@@ -619,12 +543,12 @@ class Cloud189Uploader:
                             show_progress=True,
                             on_progress=on_progress,
                         )
-                        
+
                         if result.success:
                             elapsed = time.time() - start_time
                             speed = file_size / elapsed / 1024 / 1024
                             print(f"[Cloud189] 重试上传成功！耗时: {elapsed:.1f}s")
-                            
+
                             # 发送成功通知
                             rapid_tag = "⚡秒传" if result.rapid_upload else "✅完成"
                             tg_text = (
@@ -633,8 +557,8 @@ class Cloud189Uploader:
                                 f"📊 {file_size / 1024 / 1024:.2f} MB\n"
                                 f"⏱️ {elapsed:.1f}s @ {speed:.2f} MB/s"
                             )
-                            self._send_tg_message(tg_text, self._tg_message_ids.get(file_path))
-                            
+                            self._send_tg_message(tg_text, file_path)
+
                             return {
                                 "file_id": result.user_file_id,
                                 "file_name": result.file_name,
@@ -651,9 +575,9 @@ class Cloud189Uploader:
                         if not should_retry_again or retry_count == max_retries - 1:
                             print(f"[Cloud189] 重试失败: {retry_e}")
                             break
-            
+
             print(f"[Cloud189] 上传失败: {e}")
-            
+
             # 报告上传失败
             _report_progress(
                 file_path=abs_path,
@@ -666,10 +590,10 @@ class Cloud189Uploader:
                 status="failed",
                 error=str(e),
             )
-            
+
             # 发送错误通知
             tg_text = f"❌ [天翼云盘] 上传失败\n📁 {original_file_name}\n⚠️ {e}"
-            self._send_tg_message(tg_text, self._tg_message_ids.get(file_path))
+            self._send_tg_message(tg_text, file_path)
             return None
 
     def get_upload_url(self, file_id: str) -> Optional[str]:

@@ -118,6 +118,7 @@ def append_result(db, history, task_id=None, targets="unknown", auto_retry=False
             db.add(task)
             db.flush()
     _append(db, task, history, auto_retry=auto_retry)
+    return task
 
 
 def serialize(task):

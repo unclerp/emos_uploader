@@ -45,8 +45,25 @@ def post_upload_policy(processing):
     return kind, destination
 
 
-def _commit(db):
+def _commit(db, telegram_config=None):
+    from sqlalchemy import inspect
+
+    results = [
+        obj
+        for obj in db.dirty
+        if isinstance(obj, PostUploadAction)
+        and inspect(obj).attrs.status.history.has_changes()
+        and obj.status in ("moved", "deleted", "failed")
+    ]
     db.commit()
+    if telegram_config:
+        from ..notifications.telegram import notify_post_action
+
+        for action in results:
+            try:
+                notify_post_action(telegram_config, action)
+            except Exception:
+                logger.warning("上传后操作已保存，但通知暂存失败")
     try:
         from ..web.services.state import get_state_manager
 
@@ -189,7 +206,7 @@ class QBPostUpload:
                             status="waiting",
                         )
                     )
-            _commit(db)
+            _commit(db, getattr(self.handler, "telegram_config", {}))
 
     def handled(self, torrent, file):
         key = self.file_key(torrent["hash"], file.get("index"), file.get("size"))
@@ -290,7 +307,7 @@ class QBPostUpload:
                 self.handler._uploaded_files.add(new_path)
         action.status, action.error = "moved", None
         action.updated_at = datetime.now()
-        _commit(db)
+        _commit(db, getattr(self.handler, "telegram_config", {}))
 
     def reconcile(self, torrents):
         """每次原生轮询推进状态；HTTP 200 只表示接收，不能直接标记移动成功。"""
@@ -330,12 +347,12 @@ class QBPostUpload:
                     "qB 中已找不到该种子，未执行操作",
                 )
             action.updated_at = now
-            _commit(db)
+            _commit(db, getattr(self.handler, "telegram_config", {}))
             return
         name = torrent.get("name", action.torrent_hash)
         if action.torrent_name != name:
             action.torrent_name = name
-            _commit(db)
+            _commit(db, getattr(self.handler, "telegram_config", {}))
         files = self.monitor._get_torrent_files(action.torrent_hash)
         # 即使上次请求超时或报错，先确认实际结果，避免盲目重复请求。
         if (
@@ -369,7 +386,7 @@ class QBPostUpload:
             else:
                 return
             action.updated_at = now
-            _commit(db)
+            _commit(db, getattr(self.handler, "telegram_config", {}))
             return
         if action.status == "failed":
             return
@@ -412,7 +429,7 @@ class QBPostUpload:
             action.attempt_count += 1
             action.requested_at = action.updated_at = now
             action.error = None
-            _commit(db)
+            _commit(db, getattr(self.handler, "telegram_config", {}))
         endpoint = "setLocation" if action.kind == "move" else "delete"
         data = {"hashes": action.torrent_hash}
         data.update(
@@ -433,7 +450,7 @@ class QBPostUpload:
             # 超时不能证明 qB 没有接收；持续查询实际位置，暂不重发。
             action.error = "请求结果待确认，正在查询 qB 实际状态"
         action.updated_at = datetime.now()
-        _commit(db)
+        _commit(db, getattr(self.handler, "telegram_config", {}))
 
     def retry(self, action_id):
         with _action_lock, get_session_local()() as db:
@@ -448,4 +465,4 @@ class QBPostUpload:
                 None,
                 datetime.now(),
             )
-            _commit(db)
+            _commit(db, getattr(self.handler, "telegram_config", {}))

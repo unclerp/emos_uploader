@@ -111,6 +111,14 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
             for key in ("enabled", "auto_delete"):
                 if key in values:
                     values[key] = boolean(values[key])
+    if "telegram" in result:
+        telegram = result["telegram"]
+        for key in ("bot_token", "chat_id", "channel_chat_id", "thread_id"):
+            if key in telegram:
+                telegram[key] = str(telegram[key] or "").strip()
+        thread = telegram.get("thread_id", "")
+        if thread and (not thread.isdigit() or int(thread) <= 0):
+            raise ValueError("Telegram 话题 ID 必须是正整数，留空表示不指定话题")
     if "recycle_clean" in result:
         from .recycle_cleaner.cleaner import parse_time_slots
 

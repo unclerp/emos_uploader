@@ -560,18 +560,19 @@ class RecycleCleaner:
                 f"{flag} {item.get('provider')}: {item.get('message') or '无变更'}"
             )
         lines.append(f"来源: {reason}")
-        self._send_telegram(bot_token, chat_id, "\n".join(lines))
+        self._send_telegram(bot_token, chat_id, "\n".join(lines), self.telegram_config)
 
     @staticmethod
-    def _send_telegram(bot_token: str, chat_id: str, text: str) -> None:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                json={"chat_id": chat_id, "text": text},
-                timeout=15,
-            )
-        except Exception as exc:
-            logger.warning(f"回收站清理通知发送失败: {exc}")
+    def _send_telegram(bot_token: str, chat_id: str, text: str, config=None) -> None:
+        from ...notifications.telegram import get_dispatcher, digest
+
+        config = dict(config or {}, bot_token=bot_token, chat_id=chat_id)
+        get_dispatcher().submit(
+            config,
+            "recycle:" + digest(str(datetime.now().timestamp()) + text),
+            text,
+            event="post_upload",
+        )
 
 
 # ========== 全局单例（供 Web 层取用） ==========

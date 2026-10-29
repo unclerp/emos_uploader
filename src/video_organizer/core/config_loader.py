@@ -127,7 +127,18 @@ DEFAULT_CONFIG = {
         "console_log": True,
         "file_log": False,
     },
-    "telegram": {"bot_token": "", "chat_id": ""},
+    "telegram": {
+        "enabled": True,
+        "bot_token": "",
+        "chat_id": "",
+        "thread_id": "",
+        "channel_chat_id": "",
+        "notify_progress": True,
+        "notify_success": True,
+        "notify_failure": True,
+        "notify_skipped": True,
+        "notify_post_upload": True,
+    },
     "llm_fallback": {"enabled": False, "max_concurrent": 2},
     "llm_provider_1": {
         "name": "",
@@ -561,7 +572,8 @@ def update_config(
             for key, value in options.items():
                 config[section_name][key] = (
                     json.dumps(value, ensure_ascii=False)
-                    if isinstance(value, dict) else str(value)
+                    if isinstance(value, dict)
+                    else str(value)
                 )
 
     # 保存配置文件

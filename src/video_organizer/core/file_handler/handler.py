@@ -722,6 +722,11 @@ class VideoFileHandler:
                         task_id=task_id,
                         targets=",".join(sorted(self.upload_targets)),
                         error_message=f"工作线程异常: {e}",
+                        telegram_config=(
+                            self._runtime_manager.current.config.get("telegram", {})
+                            if self._runtime_manager
+                            else getattr(self, "telegram_config", {})
+                        ),
                         auto_retry=True,
                         end_time=datetime.now(),
                     )
@@ -1061,6 +1066,7 @@ class VideoFileHandler:
             status,
             task_id=getattr(self, "_tracked_task_id", None),
             targets=",".join(sorted(self.upload_targets)),
+            telegram_config=getattr(self, "telegram_config", {}),
             **kwargs,
         )
 
@@ -1088,6 +1094,11 @@ class VideoFileHandler:
                 file_path, "failed", error_message=str(exc), end_time=datetime.now()
             )
             return False
+        from ...notifications.telegram import bind_task
+
+        bind_task(
+            getattr(self, "telegram_config", {}), file_path, self._tracked_task_id
+        )
         # 为当前文件的处理设置日志标识（幂等：若已由 worker 设置则复用同一编号）
         set_file_id(file_path)
         console_log(f"\n🔍 [线程#{worker_id}] 开始深入处理文件: {file_path}")
@@ -1452,6 +1463,9 @@ class VideoFileHandler:
                 self.logger.info(f"将文件添加到重试队列: {file_path}")
                 self._parent_monitor._retry_files.add(file_path)
         finally:
+            from ...notifications.telegram import unbind_task
+
+            unbind_task(file_path)
             # 清除当前文件的日志标识
             clear_file_id()
             # 外层队列或同步调用者最后释放占位，避免旧任务清理新任务。

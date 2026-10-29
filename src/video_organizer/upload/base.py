@@ -155,6 +155,9 @@ class TelegramNotifier:
     """Telegram 上传进度通知"""
 
     def __init__(self, bot_token: str, chat_id: str, thread_id: Optional[str] = None):
+        from ..notifications.telegram import install_log_redaction
+
+        install_log_redaction()
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.thread_id = thread_id
@@ -176,7 +179,6 @@ class TelegramNotifier:
             payload = {
                 "chat_id": self.chat_id,
                 "text": text,
-                "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             }
             if self.thread_id:
@@ -185,8 +187,8 @@ class TelegramNotifier:
             if resp.status_code == 200:
                 self._last_message_id = resp.json().get("result", {}).get("message_id")
             return self._last_message_id
-        except Exception as e:
-            logger.warning(f"发送 Telegram 进度失败: {e}")
+        except Exception:
+            logger.warning("发送 Telegram 进度失败")
             return None
 
     def send_message(self, text: str, message_id: Optional[int] = None) -> Optional[int]:
@@ -199,14 +201,12 @@ class TelegramNotifier:
                     "chat_id": self.chat_id,
                     "message_id": message_id,
                     "text": text,
-                    "parse_mode": "HTML",
                 }
             else:
                 url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
                 payload = {
                     "chat_id": self.chat_id,
                     "text": text,
-                    "parse_mode": "HTML",
                 }
             if self.thread_id:
                 payload["message_thread_id"] = self.thread_id
@@ -215,8 +215,8 @@ class TelegramNotifier:
                 result = resp.json().get("result", {})
                 self._last_message_id = result.get("message_id")
             return self._last_message_id
-        except Exception as e:
-            logger.warning(f"发送 Telegram 消息失败: {e}")
+        except Exception:
+            logger.warning("发送 Telegram 消息失败")
             return None
 
 

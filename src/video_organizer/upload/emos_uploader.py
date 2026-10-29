@@ -12,6 +12,8 @@ import datetime
 import hashlib
 import html
 
+from ..notifications.telegram import notified_upload, notify_progress
+
 _logger = logging.getLogger(__name__)
 
 
@@ -347,98 +349,24 @@ class RobustEmosVideoUploader:
         average_speed,
         elapsed_time,
     ):
-        """发送/更新 Telegram 进度消息"""
-        # 检查是否配置了 TG
-        if not self.tg_bot_token or not self.tg_chat_id:
-            return
-
-        # 限流：检查距离上次更新是否超过间隔
-        current_time = time.time()
-        if (
-            self.tg_message_id
-            and (current_time - self.tg_last_update_time) < self.tg_update_interval
-        ):
-            return
-
-        # 计算进度信息
-        progress_percent = (chunk_num + 1) / total_chunks * 100
-        uploaded_size = self.upload_stats["total_uploaded"]
-        remaining_size = file_size - uploaded_size
-
-        if average_speed > 0:
-            remaining_time = remaining_size / average_speed
-        else:
-            remaining_time = 0
-
-        # 创建进度条
-        bar_length = 20
-        filled_length = int(bar_length * (chunk_num + 1) / total_chunks)
-        bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
-        # 构建消息文本
-        message_text = (
-            f"📤 *上传进度*\n\n"
-            f"文件: `{file_name}`\n"
-            f"进度: {progress_percent:.1f}%\n"
-            f"[{bar}]\n\n"
-            f"分片: {chunk_num + 1}/{total_chunks}\n"
-            f"已上传: {self._format_size(uploaded_size)}\n"
-            f"平均速度: {self._format_speed(average_speed)}\n"
-            f"已用时间: {self._format_time(elapsed_time)}\n"
-            f"剩余时间: {self._format_time(remaining_time)}"
+        path = getattr(self, "_telegram_file_path", file_name)
+        notify_progress(
+            self.telegram_config,
+            path,
+            "Emos",
+            (chunk_num + 1) / total_chunks * 100,
+            f"分片：{chunk_num+1}/{total_chunks}\n已上传：{self._format_size(self.upload_stats['total_uploaded'])}\n平均速度：{self._format_speed(average_speed)}\n用时：{self._format_time(elapsed_time)}",
         )
-        try:
-            if self.tg_message_id is None:
-                # 第一次发送消息
-                url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
-                data = {
-                    "chat_id": self.tg_chat_id,
-                    "text": message_text,
-                    "parse_mode": "Markdown",
-                }
-                response = requests.post(url, json=data, timeout=10)
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("ok"):
-                        self.tg_message_id = result["result"]["message_id"]
-                        self.tg_last_update_time = current_time
-            else:
-                # 编辑已有消息
-                url = f"https://api.telegram.org/bot{self.tg_bot_token}/editMessageText"
-                data = {
-                    "chat_id": self.tg_chat_id,
-                    "message_id": self.tg_message_id,
-                    "text": message_text,
-                    "parse_mode": "Markdown",
-                }
-                response = requests.post(url, json=data, timeout=10)
-                if response.status_code == 200:
-                    self.tg_last_update_time = current_time
-        except Exception as e:
-            # TG 通知失败不影响主流程，静默处理
-            print(f"TG 通知失败: {e}")
-            pass
 
     def send_tg_notification(self, message_text: str, parse_mode: str = "HTML"):
-        """发送 Telegram 普通通知消息 """
-        if not self.tg_bot_token or not self.tg_chat_id:
-            return
-        url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
-        data = {
-            "chat_id": self.tg_chat_id,
-            "text": message_text,
-            "parse_mode": parse_mode,
-            "disable_web_page_preview": True,
-        }
-        if self.telegram_config.get("thread_id"):
-            data["message_thread_id"] = self.telegram_config.get("thread_id")
-        try:
-            resp = requests.post(url, json=data, timeout=10)
-            if resp.status_code != 200:
-                data.pop("parse_mode", None)
-                requests.post(url, json=data, timeout=10)
-        except Exception as e:
-            print(f"TG 通知发送失败: {e}")
+        # 保留兼容入口；内部已跳过事件统一由任务终态发送。
+        from ..notifications.telegram import get_dispatcher
+
+        config, scope, managed = get_dispatcher().context(
+            self.telegram_config, getattr(self, "_telegram_file_path", "emos")
+        )
+        if not managed:
+            return get_dispatcher().submit(config, scope, message_text, event="skipped")
 
     def check_existing_media(
         self,
@@ -1563,6 +1491,7 @@ class RobustEmosVideoUploader:
                     print(f"步骤4失败，已达到最大重试次数: {e}")
                     raise
 
+    @notified_upload("Emos")
     def upload_video(
         self,
         file_path,
@@ -1610,21 +1539,6 @@ class RobustEmosVideoUploader:
                         speed="existing size match",
                         status="skipped",
                     )
-                    # 发送 Telegram 跳过通知（HTML格式避免文件名特殊字符导致解析崩溃）
-                    safe_name = html.escape(file_name)
-                    safe_media = html.escape(str(dup.get("media_name") or "未知"))
-                    safe_uploader = html.escape(str(uploader_name))
-                    safe_id = html.escape(str(dup.get("media_id") or ""))
-
-                    tg_msg = (
-                        f"⏸️ <b>[Emos] 检测到已有相同资源，跳过上传</b>\n\n"
-                        f"📁 <b>文件:</b> <code>{safe_name}</code>\n"
-                        f"📊 <b>大小:</b> {self._format_size(file_size)}\n"
-                        f"🎬 <b>已有媒体:</b> {safe_media}\n"
-                        f"🆔 <b>媒体ID:</b> <code>{safe_id}</code>\n"
-                        f"👤 <b>上传者:</b> {safe_uploader}"
-                    )
-                    self.send_tg_notification(tg_msg, parse_mode="HTML")
                     return {
                         "media_uuid": dup.get("media_id"),
                         "skipped": True,

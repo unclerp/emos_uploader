@@ -57,6 +57,8 @@ from .pan123_client import (
 )
 
 
+from ..notifications.telegram import notified_upload, notify_progress, notify_channel
+
 class P123Uploader:
     """123云盘上传器（支持文件夹管理和TG通知）"""
 
@@ -68,7 +70,7 @@ class P123Uploader:
         password: str = "",
         telegram_config: Optional[Dict[str, Any]] = None,
         max_workers: int = 2,
-        tg_channel_123fslink: str = "liyk002",
+        tg_channel_123fslink: str = "",
     ):
         """
         初始化 123 云盘上传器
@@ -88,7 +90,9 @@ class P123Uploader:
         self.root_parent_id = parent_id
         self.telegram_config = telegram_config or {}
         self.max_workers = max_workers
-        self.tg_channel_123fslink = tg_channel_123fslink
+        self.tg_channel_123fslink = tg_channel_123fslink or self.telegram_config.get(
+            "channel_chat_id", ""
+        )
         self.client = Pan123Client(token=token, username=username, password=password)
 
         # TG 通知相关
@@ -168,86 +172,23 @@ class P123Uploader:
 
     def _send_tg_progress(
         self,
-        file_path: str,
-        file_name: str,
-        progress_percent: float,
-        uploaded_mb: float,
-        total_mb: float,
-        speed_mbps: float = 0,
-        force: bool = False,
+        file_path,
+        file_name,
+        progress_percent,
+        uploaded_mb,
+        total_mb,
+        speed_mbps=0,
+        force=False,
     ):
-        """发送/更新 Telegram 进度消息"""
-        if not self.tg_bot_token or not self.tg_chat_id:
-            return
-
-        current_time = time.time()
-        msg_id = self._tg_message_ids.get(file_path)
-
-        # 限制更新频率 (使用共享的更新时间，避免频繁更新)
-        if (
-            not force
-            and msg_id is not None
-            and (current_time - self.tg_last_update_time) < self.tg_update_interval
-        ):
-            return
-
-        # 创建进度条
-        bar_length = 20
-        filled_length = min(int(bar_length * progress_percent / 100), bar_length)
-        bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
-        # 构建消息文本
-        message_text = (
-            f"📤 *上传进度 [123云]*\n\n"
-            f"文件: `{file_name}`\n"
-            f"进度: {progress_percent:.1f}%\n"
-            f"[{bar}]\n\n"
-            f"已上传: {uploaded_mb:.2f} MB / {total_mb:.2f} MB\n"
-            f"速度: {speed_mbps:.2f} MB/s"
+        return notify_progress(
+            self.telegram_config,
+            file_path,
+            "123云盘",
+            progress_percent,
+            f"已上传：{uploaded_mb:.2f} MB / {total_mb:.2f} MB\n速度：{speed_mbps:.2f} MB/s",
         )
 
-        try:
-            if msg_id is None:
-                # 发送新消息
-                url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
-                data = {
-                    "chat_id": self.tg_chat_id,
-                    "text": message_text,
-                    "parse_mode": "Markdown",
-                }
-                response = requests.post(url, json=data, timeout=10)
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("ok"):
-                        self._tg_message_ids[file_path] = result["result"]["message_id"]
-                        self.tg_last_update_time = current_time
-            else:
-                # 更新现有消息
-                url = f"https://api.telegram.org/bot{self.tg_bot_token}/editMessageText"
-                data = {
-                    "chat_id": self.tg_chat_id,
-                    "message_id": msg_id,
-                    "text": message_text,
-                    "parse_mode": "Markdown",
-                }
-                response = requests.post(url, json=data, timeout=10)
-                if response.status_code == 200:
-                    self.tg_last_update_time = current_time
-                elif response.status_code == 400:
-                    # 消息可能已被删除，尝试重新发送
-                    self._tg_message_ids[file_path] = None
-                    self._send_tg_progress(
-                        file_path,
-                        file_name,
-                        progress_percent,
-                        uploaded_mb,
-                        total_mb,
-                        speed_mbps,
-                        force=True,
-                    )
-        except Exception:
-            pass
-
+    @notified_upload("123云盘")
     def upload_video(
         self,
         file_path: str,
@@ -831,7 +772,7 @@ class P123Uploader:
         file_path: str,
         file_name: str,
         result: Dict[str, Any],
-        tg_channel: str = "liyk002",
+        tg_channel: str = "",
         folder_path: Optional[str] = None,
     ) -> bool:
         """
@@ -851,8 +792,15 @@ class P123Uploader:
             print(f"[WARNING] TG bot token 未配置，跳过 123FSLinkV2 通知")
             return False
 
+        tg_channel = str(tg_channel or "").strip()
+        if not tg_channel:
+            return False
         # 格式化频道ID
-        if tg_channel and not tg_channel.startswith(("@", "-")):
+        if (
+            tg_channel
+            and not tg_channel.startswith(("@", "-"))
+            and not tg_channel.isdigit()
+        ):
             tg_channel = f"@{tg_channel}"
 
         link_v2 = self.generate_123fslinkv2(result)
@@ -860,35 +808,12 @@ class P123Uploader:
             print(f"[WARNING] 无法生成 123FSLinkV2 格式")
             return False
 
-        # 构建消息文本，包含文件夹路径
-        message_text = f"📤 *123云盘上传完成*\n\n"
-        if folder_path:
-            message_text += f"路径: `{folder_path}`\n"
-        message_text += f"文件: `{file_name}`\n"
-        message_text += f"格式: `{link_v2}`\n"
+        from ..notifications.telegram import digest
 
-        try:
-            url = f"https://api.telegram.org/bot{self.tg_bot_token}/sendMessage"
-            data = {
-                "chat_id": tg_channel,
-                "text": message_text,
-                "parse_mode": "Markdown",
-            }
-            response = requests.post(url, json=data, timeout=10)
-            if response.status_code == 200:
-                result_data = response.json()
-                if result_data.get("ok", False):
-                    print(f"✓ 123FSLinkV2 通知已发送到 TG 频道: {tg_channel}")
-                    return True
-                else:
-                    print(
-                        f"[WARNING] TG API 返回错误: {result_data.get('description')}"
-                    )
-                    return False
-            else:
-                print(f"[WARNING] TG API 请求失败: {response.status_code}")
-                print(f"[DEBUG] chat_id={tg_channel}, response={response.text[:200]}")
-                return False
-        except Exception as e:
-            print(f"[WARNING] 发送 123FSLinkV2 通知失败: {e}")
-            return False
+        config = dict(self.telegram_config, channel_chat_id=tg_channel)
+        message_text = f"📤 123云盘上传完成\n路径：{folder_path or ''}\n文件：{file_name}\n格式：{link_v2}"
+        return notify_channel(
+            config,
+            message_text,
+            "p123:" + digest(str(Path(file_path).absolute()) + link_v2),
+        )

@@ -132,8 +132,8 @@ class TestEmosDuplicateCheck(unittest.TestCase):
         self.assertTrue(res.get("skipped"))
         self.assertEqual(res.get("media_uuid"), "exist_uuid_123")
         self.assertEqual(res.get("reason"), "duplicate_media_file_size")
-        mock_send_tg.assert_called_once()
-        self.assertIn("exist_uuid_123", mock_send_tg.call_args[0][0])
+        # 跳过通知改为由统一任务结果/独立上传装饰器提交，不再重复发送旧 HTML 消息。
+        mock_send_tg.assert_not_called()
 
 
 if __name__ == "__main__":
