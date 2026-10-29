@@ -113,7 +113,7 @@ for (const [action,legacy,expected] of [['',true,'delete'],['',false,'keep'],['k
 
 test('Telegram 页面显示独立通知开关和明确的额外频道说明', () => {
     const p = page([]);
-    for (const [key,label] of [['notify_success','上传成功及重试解决'],['notify_failure','上传或识别失败'],['notify_skipped','重复资源跳过'],['notify_post_upload','上传后移动／删除及清理结果']]) {
+    for (const [key,label] of [['notify_queue','队列总览'],['auto_pin_queue','自动置顶队列总览'],['notify_success','上传成功及重试解决'],['notify_failure','上传或识别失败'],['notify_skipped','重复资源跳过'],['notify_post_upload','上传后移动／删除及清理结果']]) {
         const html=p.run(`renderConfigField('telegram',${JSON.stringify(key)},true)`);
         assert.ok(html.includes(label));
         assert.ok(html.includes(`name="telegram.${key}"`));

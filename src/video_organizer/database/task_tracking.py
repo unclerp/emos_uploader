@@ -56,7 +56,14 @@ def migrate_history(db):
     db.commit()
 
 
-def prepare_task(path, targets, task_id=None, status="processing", tmdb_override=None):
+def prepare_task(
+    path,
+    targets,
+    task_id=None,
+    status="processing",
+    tmdb_override=None,
+    telegram_config=None,
+):
     path, target, fingerprint, key = _identity(path, targets)
     with lock, get_session_local()() as db:
         task = (
@@ -86,7 +93,12 @@ def prepare_task(path, targets, task_id=None, status="processing", tmdb_override
             task.tmdb_override = json.dumps(tmdb_override)
         task.status, task.updated_at, task.cleared = status, datetime.now(), False
         db.commit()
-        return task.id
+        result = task.id
+    if telegram_config:
+        from ..notifications.telegram import track_queue_task
+
+        track_queue_task(telegram_config, result)
+    return result
 
 
 def get_file_task(path, targets):

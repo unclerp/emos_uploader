@@ -213,3 +213,40 @@ class TelegramDelivery(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.now
     )
+
+
+class TelegramQueueRun(Base):
+    """每个通知目的地的一轮队列；不保存 Bot Token。"""
+
+    __tablename__ = "telegram_queue_run"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    destination: Mapped[str] = mapped_column(String(64), index=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.now
+    )
+    finished_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    idle_since: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    last_text: Mapped[str] = mapped_column(Text, default="")
+    last_published_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    summary_queued: Mapped[bool] = mapped_column(Boolean, default=False)
+    pinned_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    unpin_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    pin_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    pin_failures: Mapped[int] = mapped_column(Integer, default=0)
+    pin_retry_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+
+
+class TelegramQueueItem(Base):
+    """本轮成员按任务 ID 去重；重试不重复增加文件数。"""
+
+    __tablename__ = "telegram_queue_item"
+    run_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)

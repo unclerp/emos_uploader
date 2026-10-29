@@ -735,8 +735,8 @@ function renderConfigField(section, key, value) {
         inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" autocomplete="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false">`;
     }
 
-    const telegramLabels = {enabled:'启用 Telegram 通知',bot_token:'Bot Token',chat_id:'接收通知的 Chat ID',thread_id:'群组话题 ID',channel_chat_id:'额外推送频道（可选）',notify_progress:'上传进度',notify_success:'上传成功及重试解决',notify_failure:'上传或识别失败',notify_skipped:'重复资源跳过',notify_post_upload:'上传后移动／删除及清理结果'};
-    const telegramHelp = {thread_id:'仅群组话题需要填写；普通聊天、群组或频道请留空。',channel_chat_id:'留空不推送额外频道。填写后才发送网盘链接或秒传信息，请确认目标频道。',enabled:'需同时填写 Bot Token 和接收通知的 Chat ID；通知在后台发送。'};
+    const telegramLabels = {enabled:'启用 Telegram 通知',bot_token:'Bot Token',chat_id:'接收通知的 Chat ID',thread_id:'群组话题 ID',channel_chat_id:'额外推送频道（可选）',notify_queue:'队列总览',auto_pin_queue:'自动置顶队列总览',notify_progress:'上传进度',notify_success:'上传成功及重试解决',notify_failure:'上传或识别失败',notify_skipped:'重复资源跳过',notify_post_upload:'上传后移动／删除及清理结果'};
+    const telegramHelp = {notify_queue:'每轮独立总览，统计成功、跳过、失败、处理中和等待；结束后另发简短总结。',auto_pin_queue:'置顶新一轮总览后，仅取消上一轮总览的置顶。群组或频道需授予 Bot 对应的置顶权限。',thread_id:'仅群组话题需要填写；普通聊天、群组或频道请留空。',channel_chat_id:'留空不推送额外频道。填写后才发送网盘链接或秒传信息，请确认目标频道。',enabled:'需同时填写 Bot Token 和接收通知的 Chat ID；通知在后台发送。'};
     if (section === 'telegram' && telegramHelp[key]) inputHtml += `<small>${telegramHelp[key]}</small>`;
     return `<div class="config-field">
         <div class="config-field-label">${escapeHtml(section === 'telegram' ? (telegramLabels[key] || key) : section === 'processing' && key === 'post_upload_action' ? '上传后操作' : section === 'processing' && key === 'post_upload_move_path' ? 'qB 移动目标目录' : key)} <code>${section}.${key}</code></div>

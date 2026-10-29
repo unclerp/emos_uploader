@@ -55,8 +55,12 @@ def record_task(
             )
         if telegram_config:
             try:
-                from ..notifications.telegram import notify_task_result
+                from ..notifications.telegram import (
+                    notify_task_result,
+                    track_queue_task,
+                )
 
+                track_queue_task(telegram_config, notification[0])
                 notify_task_result(telegram_config, *notification)
             except Exception:
                 logger.warning("任务已保存，但通知暂存失败")

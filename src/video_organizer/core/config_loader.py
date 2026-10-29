@@ -133,6 +133,8 @@ DEFAULT_CONFIG = {
         "chat_id": "",
         "thread_id": "",
         "channel_chat_id": "",
+        "notify_queue": True,
+        "auto_pin_queue": True,
         "notify_progress": True,
         "notify_success": True,
         "notify_failure": True,

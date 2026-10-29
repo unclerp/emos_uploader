@@ -919,7 +919,12 @@ class VideoFileHandler:
                     return False
             if not self._use_queue:
                 raise RuntimeError("qB 自动监控需要启用上传队列")
-            task_id = prepare_task(file_path, self.upload_targets, status="queued")
+            task_id = prepare_task(
+                file_path,
+                self.upload_targets,
+                status="queued",
+                telegram_config=getattr(self, "telegram_config", {}),
+            )
             if getattr(downloader, "post_upload", None):
                 downloader.post_upload.bind(file_path, task_id, schedule=True)
             self._file_downloader_map[file_path] = downloader
@@ -999,7 +1004,12 @@ class VideoFileHandler:
                 self._parent_monitor._pending_files.add(file_path)
             return False
 
-        tracking_task_id = prepare_task(file_path, self.upload_targets, status="queued")
+        tracking_task_id = prepare_task(
+            file_path,
+            self.upload_targets,
+            status="queued",
+            telegram_config=getattr(self, "telegram_config", {}),
+        )
         if self._use_queue:
             # 放入队列异步处理
             self._upload_queue.put((file_path, None, tracking_task_id))
@@ -1081,6 +1091,7 @@ class VideoFileHandler:
                 self.upload_targets,
                 self._tracked_task_id,
                 tmdb_override=getattr(self, "_manual_tmdb_override", None),
+                telegram_config=getattr(self, "telegram_config", {}),
             )
             if not getattr(self, "_manual_tmdb_override", None):
                 from ...database.task_tracking import get_attempts
@@ -2123,6 +2134,7 @@ class VideoFileHandler:
                 tracking_task_id,
                 status="queued",
                 tmdb_override=tmdb_override,
+                telegram_config=getattr(self, "telegram_config", {}),
             )
             self._uploaded_files.discard(file_path)
             self._failed_files.pop(file_path, None)

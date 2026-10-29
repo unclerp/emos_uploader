@@ -12,7 +12,7 @@ from typing import Dict
 
 import requests
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, case
 
 from ..database.models import TelegramDelivery
 from ..database.session import get_session_local
@@ -69,13 +69,24 @@ class TelegramDispatcher:
         self.contexts = {}
         self.progress_times = {}
         self.next_request = 0.0
+        self.latest_progress = {}
+        self._overview = None
+
+    @property
+    def overview(self):
+        with self.lock:
+            if self._overview is None:
+                from .queue_overview import QueueOverview
+
+                self._overview = QueueOverview(self)
+            return self._overview
 
     def register(self, config):
         if not enabled(config):
             # 即使关闭进度通知，最终通知也需要启动投递线程。
             if not any(
                 enabled(config, e)
-                for e in ("success", "failure", "skipped", "post_upload")
+                for e in ("success", "failure", "skipped", "post_upload", "queue")
             ):
                 return
         token = str(config["bot_token"]).strip()
@@ -87,6 +98,7 @@ class TelegramDispatcher:
 
     def configure(self, config):
         try:
+            self.overview.configure(config)
             self._configure(config)
         except Exception:
             logger.warning("Telegram 通知恢复暂不可用，配置和上传继续运行")
@@ -95,7 +107,14 @@ class TelegramDispatcher:
         channel_config = dict(config, chat_id=channel_destination(config), thread_id="")
         if not any(
             enabled(config, e)
-            for e in ("progress", "success", "failure", "skipped", "post_upload")
+            for e in (
+                "progress",
+                "success",
+                "failure",
+                "skipped",
+                "post_upload",
+                "queue",
+            )
         ) and not enabled(channel_config, "success"):
             return
         from ..database.models import UploadTask
@@ -176,6 +195,7 @@ class TelegramDispatcher:
 
     def bind(self, config, path, task_id):
         with self.lock:
+            self.latest_progress.pop(f"task:{task_id}", None)
             self.contexts[str(Path(path).absolute())] = (
                 dict(config),
                 f"task:{task_id}",
@@ -263,7 +283,12 @@ class TelegramDispatcher:
                         TelegramDelivery.next_attempt_at <= now,
                     )
                     .order_by(
-                        TelegramDelivery.terminal.desc(), TelegramDelivery.updated_at
+                        case(
+                            (TelegramDelivery.scope.like("queue-overview:%"), 0),
+                            else_=1,
+                        ),
+                        TelegramDelivery.terminal.desc(),
+                        TelegramDelivery.updated_at,
                     )
                     .first()
                 )
@@ -273,6 +298,7 @@ class TelegramDispatcher:
                     key: getattr(row, key)
                     for key in (
                         "identity",
+                        "scope",
                         "bot_key",
                         "chat_id",
                         "thread_id",
@@ -290,6 +316,10 @@ class TelegramDispatcher:
             }
             if snapshot["thread_id"] and not snapshot["message_id"]:
                 payload["message_thread_id"] = int(snapshot["thread_id"])
+            if not snapshot["message_id"] and snapshot["scope"].startswith(
+                "queue-overview:"
+            ):
+                payload["disable_notification"] = True
             if snapshot["message_id"]:
                 payload["message_id"] = snapshot["message_id"]
             ok, message_id, retry_after, permanent = (
@@ -320,6 +350,8 @@ class TelegramDispatcher:
                     )
                 ):
                     payload.pop("message_id", None)
+                    if snapshot["scope"].startswith("queue-overview:"):
+                        payload["disable_notification"] = True
                     if snapshot["thread_id"]:
                         payload["message_thread_id"] = int(snapshot["thread_id"])
                     response = requests.post(
@@ -378,7 +410,17 @@ class TelegramDispatcher:
     def _run(self):
         while not self.stop_event.is_set():
             try:
-                self.send_once()
+                self.overview.tick()
+            except Exception:
+                logger.warning("Telegram 队列总览暂不可用，稍后重试")
+            controlled = False
+            try:
+                controlled = self.overview.control_once()
+            except Exception:
+                logger.warning("Telegram 总览置顶暂不可用，稍后重试")
+            try:
+                if not controlled:
+                    self.send_once()
             except Exception:
                 logger.warning("Telegram 投递暂不可用，稍后重试")
             self.wake.wait(1)
@@ -403,9 +445,12 @@ def unbind_task(path):
 def notify_progress(config, path, uploader, percent, details=""):
     dispatcher = get_dispatcher()
     config, scope, managed = dispatcher.context(config, path)
+    percent = max(0, min(100, float(percent)))
+    if managed:
+        with dispatcher.lock:
+            dispatcher.latest_progress[scope] = percent
     if not enabled(config, "progress"):
         return False
-    percent = max(0, min(100, float(percent)))
     with dispatcher.lock:
         now = time.monotonic()
         previous = dispatcher.progress_times.get(scope, 0)
@@ -445,6 +490,8 @@ def notify_task_result(
     config, task_id, path, status, error="", failures=0, attempts=1, targets=""
 ):
     text, event = task_result_text(path, status, error, failures, attempts, targets)
+    with get_dispatcher().lock:
+        get_dispatcher().latest_progress.pop(f"task:{task_id}", None)
     if event:
         return get_dispatcher().submit(
             config, f"task:{task_id}", text, terminal=True, event=event
@@ -530,3 +577,10 @@ def notify_post_action(config, action):
     get_dispatcher().submit(
         config, f"post-upload:{action.id}", text, event="post_upload"
     )
+
+
+def track_queue_task(config, task_id):
+    try:
+        get_dispatcher().overview.track(config, task_id)
+    except Exception:
+        logger.warning("队列总览记录暂不可用，文件任务继续处理")
