@@ -116,6 +116,9 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         for key in ("bot_token", "chat_id", "channel_chat_id", "thread_id"):
             if key in telegram:
                 telegram[key] = str(telegram[key] or "").strip()
+        for key in ("queue_idle_seconds", "failure_window_seconds"):
+            if key in telegram and not 1 <= telegram[key] <= 3600:
+                raise ValueError(f"telegram.{key} 必须在 1 到 3600 秒之间")
         thread = telegram.get("thread_id", "")
         if thread and (not thread.isdigit() or int(thread) <= 0):
             raise ValueError("Telegram 话题 ID 必须是正整数，留空表示不指定话题")

@@ -187,7 +187,7 @@ class QueueOverview:
             f"⬆️ 正在处理：{len(active)}",
             f"⏳ 等待处理：{counts['queued']}",
         ]
-        for task in active[:3]:
+        for task in active[:8]:
             progress = self.dispatcher.latest_progress.get(f"task:{task.id}")
             detail = (
                 "100% · 等待最终确认"
@@ -198,9 +198,24 @@ class QueueOverview:
                     else "上传中" if task.status == "uploading" else "识别／处理中"
                 )
             )
-            lines.append(f"当前：{Path(task.file_path).name[:160]} · {detail}")
-        if len(active) > 3:
-            lines.append(f"另有 {len(active) - 3} 个文件正在处理")
+            lines.append(f"当前：{Path(task.file_path).name[:100]} · {detail}")
+            if progress is not None:
+                filled_file = min(10, max(0, int(progress / 10)))
+                lines.append("▰" * filled_file + "▱" * (10 - filled_file))
+                uploaded = next(
+                    (
+                        line
+                        for line in self.dispatcher.latest_details.get(
+                            f"task:{task.id}", ""
+                        ).splitlines()
+                        if line.startswith("已上传")
+                    ),
+                    None,
+                )
+                if uploaded:
+                    lines.append(uploaded[:100])
+        if len(active) > 8:
+            lines.append(f"另有 {len(active) - 8} 个文件正在处理")
         if operations:
             lines.extend(
                 [
@@ -271,7 +286,9 @@ class QueueOverview:
                         run.idle_since = None
                     elif run.idle_since is None:
                         run.idle_since = now
-                    elif (now - run.idle_since).total_seconds() >= 5:
+                    elif (now - run.idle_since).total_seconds() >= int(
+                        config.get("queue_idle_seconds", 120)
+                    ):
                         run.finished_at = now
                     text = self._text(run, tasks, counts, active, operations)
                     if text != run.last_text and (

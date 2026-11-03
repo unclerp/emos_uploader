@@ -24,7 +24,12 @@ from video_organizer.database.task_tracking import (
 )
 from video_organizer.notifications import telegram as tg
 
-CFG = {"bot_token": "123456:test-secret-token", "chat_id": "-100001", "thread_id": "42"}
+CFG = {
+    "queue_idle_seconds": 5,
+    "bot_token": "123456:test-secret-token",
+    "chat_id": "-100001",
+    "thread_id": "42",
+}
 
 
 @pytest.fixture
@@ -446,3 +451,119 @@ def test_transmission_100_percent_does_not_count_upload_success(env):
     assert "等待最终确认" in overview()["text"]
     assert "上传成功：0" in overview()["text"]
     assert not overview()["terminal"]
+
+
+def test_compact_only_overview_with_five_second_progress(env):
+    cfg = {**CFG, "compact_mode": True}
+    task = create(env, "compact.mkv", "uploading", cfg)
+    path = str(env.root / "compact.mkv")
+    tg.bind_task(cfg, path, task)
+    tg.notify_progress(cfg, path, "Emos", 60, "已上传：6 GB / 10 GB")
+    now = datetime.now()
+    tick(env, now)
+    assert len(deliveries()) == 1
+    assert "60.0%" in overview()["text"] and "▰▰▰▰▰▰▱▱▱▱" in overview()["text"]
+    assert "6 GB / 10 GB" in overview()["text"]
+    tg.notify_progress(cfg, path, "Emos", 80)
+    tick(env, now + timedelta(seconds=4))
+    assert "60.0%" in overview()["text"]
+    tick(env, now + timedelta(seconds=5))
+    assert "80.0%" in overview()["text"]
+    tg.notify_task_result(cfg, task, path, "completed")
+    assert len(deliveries()) == 1
+
+
+def test_default_idle_is_120_seconds(env):
+    cfg = {**CFG, "compact_mode": True}
+    cfg.pop("queue_idle_seconds")
+    task = create(env, "idle.mkv", "completed", cfg)
+    now = datetime.now()
+    tick(env, now)
+    tick(env, now + timedelta(seconds=119))
+    assert not runs()[0]["finished_at"]
+    tick(env, now + timedelta(seconds=120))
+    assert runs()[0]["finished_at"]
+    assert task
+
+
+def test_failure_window_combines_and_resolved_updates_original(env):
+    cfg = {**CFG, "compact_mode": True}
+    now = datetime.now()
+    tasks = [create(env, f"failed{i}.mkv", "failed", cfg) for i in range(2)]
+    for task in tasks:
+        assert env.d.failures.record(cfg, task, now)
+    env.d.failures.tick(now + timedelta(seconds=59))
+    assert not deliveries()
+    env.d.failures.tick(now + timedelta(seconds=60))
+    assert len(deliveries()) == 1 and "共 2 项" in deliveries()[0]["text"]
+    send(env)
+    message_id = deliveries()[0]["message_id"]
+    for task in tasks:
+        set_task_status(task, "completed")
+    env.d.failures.tick(now + timedelta(seconds=61))
+    assert "全部解决" in deliveries()[0]["text"]
+    send(env)
+    assert deliveries()[0]["message_id"] == message_id
+    assert env.post.call_args.args[0].endswith("/editMessageText")
+
+
+def test_transient_failure_resolved_before_window_never_notifies(env):
+    cfg = {**CFG, "compact_mode": True}
+    now = datetime.now()
+    task = create(env, "transient.mkv", "failed", cfg)
+    env.d.failures.record(cfg, task, now)
+    set_task_status(task, "completed")
+    env.d.failures.tick(now + timedelta(seconds=10))
+    env.d.failures.tick(now + timedelta(seconds=70))
+    assert not deliveries()
+
+
+def test_failure_digest_survives_restart_and_repeat_retry_does_not_duplicate(
+    env, monkeypatch
+):
+    from video_organizer.database.models import (
+        TelegramFailureGroup,
+        TelegramFailureItem,
+    )
+
+    cfg = {**CFG, "compact_mode": True}
+    now = datetime.now()
+    task = create(env, "restart.mkv", "failed", cfg)
+    env.d.failures.record(cfg, task, now)
+    d = tg.TelegramDispatcher(auto_start=False)
+    monkeypatch.setattr(tg, "get_dispatcher", lambda: d)
+    d.configure(cfg)
+    d.failures.record(cfg, task, now + timedelta(seconds=61))
+    d.failures.tick(now + timedelta(seconds=61))
+    assert len(deliveries()) == 1
+    with session.get_session_local()() as db:
+        assert db.query(TelegramFailureGroup).count() == 1
+        assert db.query(TelegramFailureItem).count() == 1
+
+
+def test_compact_post_success_suppressed_but_failure_resolution_is_edited(env):
+    cfg = {**CFG, "compact_mode": True}
+    task = create(env, "move.mkv", "completed", cfg)
+    action_id = bind_action(task, "moved")
+    with session.get_session_local()() as db:
+        action = db.get(PostUploadAction, action_id)
+        tg.notify_post_action(cfg, action)
+        assert not deliveries()
+        action.status = "failed"
+        db.commit()
+        tg.notify_post_action(cfg, action)
+        assert len(deliveries()) == 1
+        action.status = "moved"
+        db.commit()
+        tg.notify_post_action(cfg, action)
+    assert len(deliveries()) == 1 and "移动成功" in deliveries()[0]["text"]
+
+
+def test_compact_disabled_queue_falls_back_to_detailed_and_reload_stops_pending(env):
+    cfg = {**CFG, "compact_mode": True, "notify_queue": False}
+    task = create(env, "fallback.mkv", "processing", cfg)
+    path = str(env.root / "fallback.mkv")
+    tg.bind_task(cfg, path, task)
+    assert deliveries()[0]["pending"]
+    env.d.configure({**cfg, "notify_queue": True})
+    assert not [r for r in deliveries() if r["scope"].startswith("task:")][0]["pending"]

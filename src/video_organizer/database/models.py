@@ -250,3 +250,25 @@ class TelegramQueueItem(Base):
     __tablename__ = "telegram_queue_item"
     run_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+
+class TelegramFailureGroup(Base):
+    """一分钟内的失败合并提醒，重试继续更新原消息。"""
+
+    __tablename__ = "telegram_failure_group"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    destination: Mapped[str] = mapped_column(String(64), index=True)
+    opened_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.now
+    )
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_text: Mapped[str] = mapped_column(Text, default="")
+    last_published_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+
+
+class TelegramFailureItem(Base):
+    __tablename__ = "telegram_failure_item"
+    group_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(Integer, primary_key=True)

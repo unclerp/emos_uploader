@@ -47,6 +47,15 @@ def enabled(config, event="progress"):
     )
 
 
+def compact(config):
+    return str(config.get("compact_mode", False)).lower() in (
+        "true",
+        "1",
+        "yes",
+        "on",
+    ) and enabled(config, "queue")
+
+
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -70,6 +79,8 @@ class TelegramDispatcher:
         self.progress_times = {}
         self.next_request = 0.0
         self.latest_progress = {}
+        self.latest_details = {}
+        self._failures = None
         self._overview = None
 
     @property
@@ -80,6 +91,15 @@ class TelegramDispatcher:
 
                 self._overview = QueueOverview(self)
             return self._overview
+
+    @property
+    def failures(self):
+        with self.lock:
+            if self._failures is None:
+                from .failure_digest import FailureDigest
+
+                self._failures = FailureDigest(self)
+            return self._failures
 
     def register(self, config):
         if not enabled(config):
@@ -99,6 +119,7 @@ class TelegramDispatcher:
     def configure(self, config):
         try:
             self.overview.configure(config)
+            self.failures.configure(config)
             self._configure(config)
         except Exception:
             logger.warning("Telegram 通知恢复暂不可用，配置和上传继续运行")
@@ -144,6 +165,9 @@ class TelegramDispatcher:
                 .all()
             )
             for row in rows:
+                if compact(config) and row.scope.startswith(("task:", "file:")):
+                    row.pending = False
+                    continue
                 if row.blocked:
                     row.blocked, row.next_attempt_at = False, datetime.now()
                 if not row.terminal and row.scope.startswith("task:"):
@@ -196,11 +220,14 @@ class TelegramDispatcher:
     def bind(self, config, path, task_id):
         with self.lock:
             self.latest_progress.pop(f"task:{task_id}", None)
+            self.latest_details.pop(f"task:{task_id}", None)
             self.contexts[str(Path(path).absolute())] = (
                 dict(config),
                 f"task:{task_id}",
                 True,
             )
+        if compact(config):
+            return
         self.submit(
             config,
             f"task:{task_id}",
@@ -217,6 +244,12 @@ class TelegramDispatcher:
         self, config, scope, text, terminal=True, event="progress", restart=False
     ):
         if not enabled(config, event):
+            return False
+        if (
+            compact(config)
+            and scope.startswith(("task:", "file:"))
+            and event != "failure"
+        ):
             return False
         try:
             token = str(config["bot_token"]).strip()
@@ -413,6 +446,10 @@ class TelegramDispatcher:
                 self.overview.tick()
             except Exception:
                 logger.warning("Telegram 队列总览暂不可用，稍后重试")
+            try:
+                self.failures.tick()
+            except Exception:
+                logger.warning("Telegram 失败汇总暂不可用，稍后重试")
             controlled = False
             try:
                 controlled = self.overview.control_once()
@@ -449,7 +486,8 @@ def notify_progress(config, path, uploader, percent, details=""):
     if managed:
         with dispatcher.lock:
             dispatcher.latest_progress[scope] = percent
-    if not enabled(config, "progress"):
+            dispatcher.latest_details[scope] = details
+    if compact(config) or not enabled(config, "progress"):
         return False
     with dispatcher.lock:
         now = time.monotonic()
@@ -492,6 +530,13 @@ def notify_task_result(
     text, event = task_result_text(path, status, error, failures, attempts, targets)
     with get_dispatcher().lock:
         get_dispatcher().latest_progress.pop(f"task:{task_id}", None)
+        get_dispatcher().latest_details.pop(f"task:{task_id}", None)
+    if compact(config):
+        return (
+            get_dispatcher().failures.record(config, task_id)
+            if status == "failed"
+            else False
+        )
     if event:
         return get_dispatcher().submit(
             config, f"task:{task_id}", text, terminal=True, event=event
@@ -566,6 +611,21 @@ def notify_channel(config, text, scope):
 def notify_post_action(config, action):
     if action.status not in ("moved", "deleted", "failed"):
         return
+    if compact(config) and action.status != "failed":
+        # 曾提醒过的操作失败仍需编辑为已解决，普通成功不另发。
+        with get_dispatcher().lock, get_session_local()() as db:
+            existing = (
+                db.query(TelegramDelivery)
+                .filter_by(
+                    bot_key=digest(str(config["bot_token"]).strip()),
+                    chat_id=str(config["chat_id"]).strip(),
+                    thread_id=str(config.get("thread_id", "") or "").strip(),
+                    scope=f"post-upload:{action.id}",
+                )
+                .first()
+            )
+            if existing is None:
+                return
     kind = "移动" if action.kind == "move" else "删除"
     state = "成功" if action.status in ("moved", "deleted") else "失败"
     text = f"{'✅' if state == '成功' else '⚠️'} 上传后{kind}{state}\n种子：{action.torrent_name or action.torrent_hash}"
