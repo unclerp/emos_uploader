@@ -270,3 +270,21 @@ def test_failed_override_is_not_automatically_retried_without_id(monkeypatch):
     handler.renamer.extract_metadata.assert_not_called()
     handler._parent_monitor._retry_files.add.assert_not_called()
     assert "/input/wrong.mkv" in handler._failed_files
+
+
+@pytest.mark.parametrize("endpoint", ["preview", "validate"])
+@pytest.mark.parametrize("season", [0, "0", "00"])
+def test_zero_season_is_visible_in_manual_api(api, tmp_path, endpoint, season):
+    client, _, renamer = api
+    renamer.extract_metadata_with_tmdb.return_value["season"] = season
+    path = tmp_path / "Show.S00EP01.mkv"
+    path.touch()
+    result = client.post(
+        "/manual/" + endpoint,
+        json={"file_path": str(path), "tmdb_id": 42, "media_type": "tv"},
+    )
+    assert result.status_code == 200
+    data = result.json()
+    assert (
+        data["metadata"]["season"] if endpoint == "preview" else data["season"]
+    ) == 0

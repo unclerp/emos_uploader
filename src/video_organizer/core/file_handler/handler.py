@@ -1277,7 +1277,7 @@ class VideoFileHandler:
             if tmdb_id and media_type and title and needs_emos_item:
                 # 构建动态 URL，使用实际的 tmdb_id, season, episode
                 try:
-                    season_num = int(season) if season else 1
+                    season_num = int(season) if season not in (None, "") else 1
                 except (ValueError, TypeError):
                     season_num = 1
                 try:

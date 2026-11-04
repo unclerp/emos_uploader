@@ -762,7 +762,7 @@ class VideoRenamer:
             show_name = metadata.get("show_name", "")
             if show_name:
                 cleaned_show_name = re.sub(
-                    r'\s*S\d+E\d+\s*$', '', show_name, flags=re.IGNORECASE
+                    r'\s*S\d+EP?\d+\s*$', '', show_name, flags=re.IGNORECASE
                 ).strip()
                 if cleaned_show_name != show_name:
                     logger.debug(f"清洗 show_name: '{show_name}' -> '{cleaned_show_name}'")
@@ -830,7 +830,7 @@ class VideoRenamer:
             # 如果剧名全是数字（有些正则误抓），也视为无效
             is_invalid_name = extracted_show_name.isdigit()
             # 如果剧名只包含季集信息（如 S01E81），也视为无效
-            is_season_episode_only = bool(re.match(r'^S\d+E\d+', extracted_show_name.upper()))
+            is_season_episode_only = bool(re.match(r'^S\d+EP?\d+', extracted_show_name.upper()))
 
             should_lookup_parent = (
                 not metadata.get("show_name") 
@@ -886,7 +886,7 @@ class VideoRenamer:
                                 if (is_fragment or is_season_episode_only) and key == "show_name":
                                     metadata[key] = val
                                 # 否则只在字段为空时补全
-                                elif not metadata.get(key) and val:
+                                elif (metadata.get(key) in (None, "") if key == "season" else not metadata.get(key)) and (val not in (None, "") if key == "season" else val):
                                     metadata[key] = val
 
                             logger.info(
@@ -898,8 +898,8 @@ class VideoRenamer:
                         # 如果父目录没有剧名但有季号（如 Season01 目录），补全季号
                         elif (
                             parent_metadata
-                            and parent_metadata.get("season")
-                            and not metadata.get("season")
+                            and parent_metadata.get("season") not in (None, "")
+                            and metadata.get("season") in (None, "")
                             and "season" not in locked_fields
                         ):
                             metadata["season"] = parent_metadata["season"]
@@ -939,7 +939,7 @@ class VideoRenamer:
                         if (
                             upper_candidate in fragment_keywords
                             or upper_candidate.isdigit()
-                            or re.match(r"^S\d+E\d+", upper_candidate)
+                            or re.match(r"^S\d+EP?\d+", upper_candidate)
                             or upper_candidate in ("SEASON", "SPECIAL", "EXTRA", "EXTRAS")
                         ):
                             continue
@@ -1071,7 +1071,7 @@ class VideoRenamer:
                             and metadata.get("year")
                             and type_conf < 0.7
                             and not (
-                                metadata.get("season")
+                                metadata.get("season") not in (None, "")
                                 and metadata.get("episode")
                             )
                         ):
@@ -1343,9 +1343,9 @@ class VideoRenamer:
             # 0.13 匹配中文目录格式 "剧名(年份)" - 如 "仙武传(2024)"
             r"^(?P<show_name>[\u4e00-\u9fff\w\s]+?)\s*\((?P<year>\d{4})\)",
             # 0.10 匹配 "数字-数字 剧名(年份)/SxxExx" 格式（如 6-2神国之上(2025)/S01E05）- 最高优先级
-            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)[\/\\]S(?P<season>\d+)E(?P<episode>\d+)",
+            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)[\/\\]S(?P<season>\d+)EP?(?P<episode>\d+)",
             # 0.11 匹配 "数字-数字 剧名(年份)SxxExx" 格式（无分隔符）
-            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)\s*S(?P<season>\d+)E(?P<episode>\d+)",
+            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)\s*S(?P<season>\d+)EP?(?P<episode>\d+)",
             # 0.9 Special pattern for [Group][Type][ShowName][EnglishName][Year][Episode][Tags].mp4 (GM-Team style)
             # Like: [GM-Team][国漫][遮天][Shrouding the Heavens][2023][142][AVC][GB][1080P].mp4
             r"^\[[^\]]+\]\s*\[[^\]]+\]\s*\[(?P<show_name>[^\]]+)\]\[[^\]]+\]\[(?P<year>\d{4})\]\[(?P<episode>\d{1,4})\]",
@@ -1392,7 +1392,7 @@ class VideoRenamer:
             # 0. 中英双语剧集格式：剧名+季号.英文译名.SxxExx.年份.质量...
             # 如：刘老根1.Liu.Lao.Gen.S01E11.2002.2160p.WEB-DL.H265.AAC-HHWEB
             # 如：乡村爱情9.Love.of.Village.S03E08.2021.1080p.WEB-DL...
-            r"(?:^|[\\/])(?P<show_name_cn>[\u4e00-\u9fff]+?)(?P<cns_season>\d+)[._](?P<en_title>[A-Za-z0-9._]+?)[._]S(?P<season>\d+)E(?P<episode>\d+)",
+            r"(?:^|[\\/])(?P<show_name_cn>[\u4e00-\u9fff]+?)(?P<cns_season>\d+)[._](?P<en_title>[A-Za-z0-9._]+?)[._]S(?P<season>\d+)EP?(?P<episode>\d+)",
             # 0.8.5 匹配独立 E## 剧集标记格式（无 S## 前缀）
             # 如：The.Untold.Story.of.Tibet.2013.E32.1080p-WEB-DL...
             # 如：Show.Name.E01.1080p.BluRay.x264-GROUP
@@ -1411,7 +1411,7 @@ class VideoRenamer:
             # 2.6 匹配简化的点分隔电影格式 (电影名称.年份)
             r"^(?P<show_name>[\w\s\.\-]+?)[.\-](?P<year>\d{4})[.\-]",
             # 1. Show Name Season 01 Episode 01
-            r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)E(?P<episode>\d+)",
+            r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)EP?(?P<episode>\d+)",
             # 1.5. 匹配季节-only 格式（如 Downton.Abbey.S06.1080p.BluRay.x264...）
             r"^(?P<show_name>[A-Za-z][A-Za-z0-9\s\.]*?)[. ]S(?P<season>\d+)(?:\.|$)",
             # 1.8. 匹配 "Season X Episode Y" 格式（如 The Office Season 3 Episode 22）
@@ -1445,11 +1445,11 @@ class VideoRenamer:
             # 2.7 匹配 "[Release Group] Show Name S3 [01]" 格式（S和集号在方括号中）
             r"^\[[^\]]+\]\s*(?P<show_name>(?!^\d+$)[A-Za-z][A-Za-z0-9\s\-\'\.]+?)\s+S(?P<season>\d+)\s+\[(?P<episode>\d{1,4}(?:-\d{1,4})?)\]",
             # 2.8 匹配 "数字-数字 剧名(年份)/SxxExx" 格式（如 6-2神国之上(2025)/S01E05）- 优先级高
-            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)[\/\\]S(?P<season>\d+)E(?P<episode>\d+)",
+            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)[\/\\]S(?P<season>\d+)EP?(?P<episode>\d+)",
             # 2.9 匹配 "数字-数字 剧名(年份)SxxExx" 格式（无分隔符）- 优先级高
-            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)\s*S(?P<season>\d+)E(?P<episode>\d+)",
+            r"^(?P<prefix>\d+-\d+)?(?P<show_name>[\u4e00-\u9fff\w\s\.\-]+?)\s*\((?P<year>\d{4})\)\s*S(?P<season>\d+)EP?(?P<episode>\d+)",
             # 1. Show Name Season 01 Episode 01
-            r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)E(?P<episode>\d+)",
+            r"^(?P<show_name>.*?)[. ]?S(?P<season>\d+)EP?(?P<episode>\d+)",
             # 匹配 Show Name - 09 (严格限制show_name不能只含数字)
             r"^(?:\[[^\]]+\])?\s*(?P<show_name>(?!^\d+$)(?:[^\-]|\-(?!\d{2,3}(?:\s|\.|\[|$)))+?)\s*-\s*(?P<episode>\d+(?:-\d+)?)\s*(?:\[|\(|$)",
             # 2.4 匹配 "Show.Name.EP03.1080p...-ReleaseGroup" 格式（如 Kurosaki.san.no...EP03.1080p.HULU.WEB-DL.AAC2.0.H.264-MagicStar）
@@ -1602,7 +1602,7 @@ class VideoRenamer:
                 # 1. 优先处理罗马数字转换
                 if "roman_season" in metadata and metadata["roman_season"]:
                     # 如果 season 和 episode 已通过 SxxExx 模式正确提取，跳过罗马数字处理
-                    if metadata.get("season") and metadata.get("episode"):
+                    if metadata.get("season") not in (None, "") and metadata.get("episode"):
                         pass
                     else:
                         digit = self._roman_to_digit(metadata["roman_season"])
@@ -1619,7 +1619,7 @@ class VideoRenamer:
                 show_name = metadata["show_name"]
 
                 # 1.0 清理季号相关文本（如 "2nd Season", "-S2", "S2", "Season X" 等）
-                if metadata.get("season"):
+                if metadata.get("season") not in (None, ""):
                     season_num = metadata["season"]
                     # 移除模式：数字+序数词+Season（如 "2nd Season"）
                     show_name = re.sub(
@@ -1771,7 +1771,7 @@ class VideoRenamer:
 
                 # 5.5 如果没有提取到季号，但show_name末尾有_数字格式，提取为季号
                 # 如 Baka_Test_Shoukanjuu_2 -> 季号2，同时从show_name中移除
-                if not metadata.get("season"):
+                if metadata.get("season") in (None, ""):
                     underscore_season_match = re.search(r"_(\d{1,2})\s*$", show_name)
                     if underscore_season_match:
                         season_num = int(underscore_season_match.group(1))
@@ -1791,7 +1791,7 @@ class VideoRenamer:
                     flags=re.IGNORECASE,
                 )
                 # 5.6 提取文本型季号（如 2nd Season, Season 2, S2 等）
-                if not metadata.get("season"):
+                if metadata.get("season") in (None, ""):
                     # 尝试匹配: Show Name 2nd Season, Show Name Season 2, Show Name - S2, Show Name 2
                     patterns = [
                         r"(?:\s+|^)(?P<num>\d{1,2})(?:st|nd|rd|th)\s+Season.*$",      # 2nd Season (with trailing)
@@ -1916,7 +1916,7 @@ class VideoRenamer:
         # 如果没有匹配到show_name但有cleaned_name，尝试提取show_name
         if not metadata.get("show_name") and cleaned_name:
             # 从清理后的名称中提取可能的剧集信息，然后获取show_name
-            season_episode_pattern = r"(S\d+E\d+|第\d+季第\d+集。第\d+集)"
+            season_episode_pattern = r"(S\d+EP?\d+|第\d+季第\d+集。第\d+集)"
             match = re.search(season_episode_pattern, cleaned_name, re.IGNORECASE)
             if match:
                 # 提取show_name为剧集信息前的部分
@@ -1934,7 +1934,7 @@ class VideoRenamer:
 
         # 检查是否有明确的SxxExx格式（即使包含PT/网盘标签）
         # SxxExx格式是最明确的剧集标识，应该优先识别
-        if re.search(r"(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])", base_name):
+        if re.search(r"(?i)(^|[^a-zA-Z])S\d+EP?\d+($|[^a-zA-Z])", base_name):
             is_tv = True
         # 检查其他季集信息，包括中文季集格式和OVA/SP标识，即使包含分辨率等信息
         # 只要有明确的季集标识就应识别为TV，避免将包含分辨率的中文剧集或OVA/SP误判为电影
@@ -1954,7 +1954,7 @@ class VideoRenamer:
             base_name,
         ):
             is_tv = True
-        elif metadata.get("season") and metadata.get("episode"):
+        elif metadata.get("season") not in (None, "") and metadata.get("episode"):
             # 检查season和episode是否合理（避免将年份等数字误识别）
             try:
                 season_num = int(metadata["season"])
@@ -1980,7 +1980,7 @@ class VideoRenamer:
 
         # 统一检查：如果已经识别为TV，需要验证season和episode是否合理
         if is_tv:
-            if metadata.get("season") and metadata.get("episode"):
+            if metadata.get("season") not in (None, "") and metadata.get("episode"):
                 try:
                     season_num = int(metadata["season"])
                     episode_num = int(metadata["episode"])
@@ -2001,7 +2001,7 @@ class VideoRenamer:
                         is_tv = False
                 except (ValueError, TypeError):
                     is_tv = False
-            elif metadata.get("season"):
+            elif metadata.get("season") not in (None, ""):
                 try:
                     season_num = int(metadata["season"])
                     # 如果season大于10，可能是误识别
@@ -2015,10 +2015,10 @@ class VideoRenamer:
                             pass
                 except (ValueError, TypeError):
                     is_tv = False
-        elif metadata.get("season") or metadata.get("episode"):
+        elif metadata.get("season") not in (None, "") or metadata.get("episode"):
             # 只有season或只有episode的情况
             try:
-                if metadata.get("season"):
+                if metadata.get("season") not in (None, ""):
                     season_num = int(metadata["season"])
                     if season_num > 10:
                         is_tv = False
@@ -2067,7 +2067,7 @@ class VideoRenamer:
             # 如果文件名中包含年份，且没有明确的剧集格式，需要进一步判断
             # 不要立即默认为电影，而是标记为不确定，让TMDB查询来决定
             elif not re.search(
-                r"(?i)(^|[^a-zA-Z])S\d+E\d+($|[^a-zA-Z])|第\d+季|第\d+集|EP\d+|(^|[.\s])E\d{1,4}(?=[.\s\-\[\(\)]|$)",
+                r"(?i)(^|[^a-zA-Z])S\d+EP?\d+($|[^a-zA-Z])|第\d+季|第\d+集|EP\d+|(^|[.\s])E\d{1,4}(?=[.\s\-\[\(\)]|$)",
                 base_name,
             ):
                 # 有年份但无集信息，暂时不确定类型，设置为None让后续TMDB查询决定
@@ -2090,7 +2090,7 @@ class VideoRenamer:
             metadata["media_type"] = None
         else:
             # 默认情况，根据是否有季集信息判断
-            if metadata.get("season") or metadata.get("episode"):
+            if metadata.get("season") not in (None, "") or metadata.get("episode"):
                 metadata["media_type"] = "tv"
             else:
                 metadata["media_type"] = "movie"
@@ -2100,7 +2100,7 @@ class VideoRenamer:
         if media_type == "tv":
             # 对于电视剧，如果有明确的episode但没有season，默认设置season=1
             # 无论是否有显式的季号标识（Sxx或第x季），只要是TV类型且有集号，就应该有季号
-            if metadata.get("episode") and not metadata.get("season"):
+            if metadata.get("episode") and metadata.get("season") in (None, ""):
                 metadata["season"] = "1"
         else:  # movie类型
             # 对于电影，清空season和episode
@@ -2527,7 +2527,7 @@ class VideoRenamer:
         prepared = prepared.replace("_", " ")
 
         if re.search(r"[\u4e00-\u9fff]", prepared):
-            prepared = re.sub(r"S\d+E\d+", "", prepared, flags=re.IGNORECASE)
+            prepared = re.sub(r"S\d+EP?\d+", "", prepared, flags=re.IGNORECASE)
             prepared = re.sub(r"S\d+", "", prepared, flags=re.IGNORECASE)
             prepared = re.sub(r"第\d+季(第\d+集)?", "", prepared, flags=re.IGNORECASE)
             prepared = re.sub(r"\d+集", "", prepared)
@@ -2536,7 +2536,7 @@ class VideoRenamer:
             prepared = prepared.strip()
         else:
             # 对于英文搜索词，只移除 SxxExx 格式，保留 Sxx 格式用于电视剧识别
-            prepared = re.sub(r"S\d+E\d+", "", prepared, flags=re.IGNORECASE)
+            prepared = re.sub(r"S\d+EP?\d+", "", prepared, flags=re.IGNORECASE)
             # 保留 CamelCase 格式（如 BluRay），只对纯小写单词首字母大写
             prepared = re.sub(r"\b[a-z]", lambda m: m.group(0).upper(), prepared)
             prepared = re.sub(r"\s+", " ", prepared).strip()
@@ -2884,7 +2884,7 @@ class VideoRenamer:
         )
         return bool(
             re.search(
-                r"(?i)(?:^|[\s\-_.(（])s\d{1,2}(?:e\d+)?(?:$|[\s\-_.)）])|"
+                r"(?i)(?:^|[\s\-_.(（])s\d{1,2}(?:ep?\d+)?(?:$|[^A-Za-z0-9])|"
                 r"第\d+季|第[一二三四五六七八九十百]+季|"
                 r"(?:^|[\s\-_.(（])season\s*\d+",
                 hay,
@@ -2917,7 +2917,7 @@ class VideoRenamer:
             except (TypeError, ValueError):
                 return None
 
-        if season:
+        if season not in (None, ""):
             # season 已存在：显式季标记（S01/第1季/Season 1）始终尊重；
             # 若只是 GuessIt 的默认值 1（无显式标记）且带目录年份，
             # 允许反推覆盖——"一念永恒 完结季（2026）" season 被补成 1，
@@ -3988,7 +3988,7 @@ class VideoRenamer:
                 is_invalid_cleaned_name = False
                 if cleaned_name:
                     cleaned_upper = cleaned_name.upper()
-                    if re.match(r'^S\d+E\d+$', cleaned_upper):  # S01E01
+                    if re.match(r'^S\d+EP?\d+$', cleaned_upper):  # S01E01
                         is_invalid_cleaned_name = True
                     elif re.match(r'^[EX]P?\d+$', cleaned_upper):  # E01, EP01
                         is_invalid_cleaned_name = True
@@ -4273,7 +4273,7 @@ class VideoRenamer:
                     if en_title:
                         # 清洗：去季集标记、年份，替换dots
                         cleaned = re.sub(
-                            r'[.\s]*S\d+E\d+[.\s]*', ' ',
+                            r'[.\s]*S\d+EP?\d+[.\s]*', ' ',
                             str(en_title), flags=re.IGNORECASE
                         )
                         cleaned = re.sub(
@@ -4626,7 +4626,7 @@ class VideoRenamer:
                 # 如果有剧集信息，尝试找到对应的剧集
                 self._ensure_season(metadata, entry_year)
 
-                if metadata.get("season") and metadata.get("episode"):
+                if metadata.get("season") not in (None, "") and metadata.get("episode"):
                     # 处理连集 (如 115-120)，提取第一个集号用于搜索
                     search_episode = (
                         str(metadata["episode"]).split("-")[0]
@@ -4875,7 +4875,7 @@ class VideoRenamer:
 
         # 准备用于格式化的变量字典，优先使用原始标题
         def safe_int(val, default=1):
-            if not val:
+            if val in (None, ""):
                 return default
             if isinstance(val, int):
                 return val

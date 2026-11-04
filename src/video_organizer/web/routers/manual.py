@@ -391,7 +391,7 @@ def _do_preview(raw_path: str, config: dict, tmdb_override=None) -> PreviewRespo
     title = metadata.get("show_name") or metadata.get("title") or None
     raw_year = metadata.get("year")
     year = int(raw_year) if raw_year and str(raw_year).strip().isdigit() else None
-    season = int(metadata["season"]) if metadata.get("season") else None
+    season = int(metadata["season"]) if metadata.get("season") not in (None, "") else None
     episode = int(metadata["episode"]) if metadata.get("episode") else None
     episode_title = metadata.get("episode_title") or None
     media_type = metadata.get("media_type")
@@ -494,7 +494,7 @@ def _do_validate(
     raw_year = metadata.get("year")
     year = int(raw_year) if raw_year and str(raw_year).strip().isdigit() else None
     raw_season = metadata.get("season")
-    season = int(raw_season) if raw_season else None
+    season = int(raw_season) if raw_season not in (None, "") else None
     raw_episode = metadata.get("episode")
     episode = int(raw_episode) if raw_episode else None
     episode_title = metadata.get("episode_title") or None

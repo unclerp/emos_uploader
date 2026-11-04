@@ -232,7 +232,7 @@ class GuessItParser:
             compact_result = None
             stem_only = path_obj.stem
             has_season_episode_pattern = bool(
-                re.search(r"S\d+E\d+$", stem_only, re.IGNORECASE)
+                re.search(r"S\d+EP?\d+$", stem_only, re.IGNORECASE)
             )
             compact_match = (
                 None
@@ -369,12 +369,12 @@ class GuessItParser:
                 season_num = None
                 episode_num = None
                 clean_en_title = en_title
-                se_match = re.search(r"[\.\s]S(\d+)E(\d+)$", en_title, re.IGNORECASE)
+                se_match = re.search(r"[\.\s]S(\d+)EP?(\d+)$", en_title, re.IGNORECASE)
                 if se_match:
                     season_num = int(se_match.group(1))
                     episode_num = int(se_match.group(2))
                     clean_en_title = re.sub(
-                        r"[\.\s]S\d+E\d+$", "", en_title, flags=re.IGNORECASE
+                        r"[\.\s]S\d+EP?\d+$", "", en_title, flags=re.IGNORECASE
                     )
                     logger.debug(
                         f"PT 命名法检测到剧集格式: season={season_num}, episode={episode_num}"
@@ -697,7 +697,7 @@ class GuessItParser:
                     new_filename = f"{show_name} E{episode_num:02d}{path.suffix}"
 
                 # 如果有季号，添加季号
-                if season:
+                if season not in (None, ""):
                     new_filename = (
                         f"{show_name} S{season:02d}E{episode_num:02d}{path.suffix}"
                     )
@@ -1297,7 +1297,7 @@ class GuessItParser:
             return True
 
         # 仅包含季集信息（如 "S01E81"）
-        if re.match(r"^S\d+E\d+$", show_name.upper()):
+        if re.match(r"^S\d+EP?\d+$", show_name.upper()):
             return True
 
         # 中文集号格式（如 "第7集"、"第01话"、"第1話"）
@@ -1540,7 +1540,7 @@ class GuessItParser:
                     re.search(
                         r"\[S\d+\]|\(S\d+\)|\.S\d+\.|-S\d+-", filename, re.IGNORECASE
                     )
-                    or re.search(r"S\d+E\d+", filename, re.IGNORECASE)
+                    or re.search(r"S\d+EP?\d+", filename, re.IGNORECASE)
                     or
                     # 支持空格的季号格式：第 2 季、第 02 季
                     re.search(r"第\s*\d+\s*季", filename)
@@ -1559,8 +1559,8 @@ class GuessItParser:
                 )
                 # 转换为整数进行比较（regex_value 可能是字符串）
                 try:
-                    regex_season = int(regex_value) if regex_value else None
-                    guessit_season = int(guessit_value) if guessit_value else None
+                    regex_season = int(regex_value) if regex_value not in (None, "") else None
+                    guessit_season = int(guessit_value) if guessit_value not in (None, "") else None
                 except (ValueError, TypeError):
                     regex_season = None
                     guessit_season = None
@@ -1649,7 +1649,7 @@ class GuessItParser:
             and guessit_media_type != "tv"
         ):
             has_strong_tv_marker = bool(
-                re.search(r"(?i)S\d+E\d+|第\d+[集季话]|EP\d+|Episode\s*\d+", filename)
+                re.search(r"(?i)S\d+EP?\d+|第\d+[集季话]|EP\d+|Episode\s*\d+", filename)
             )
             if not has_strong_tv_marker:
                 merged["media_type"] = guessit_media_type
