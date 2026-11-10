@@ -192,12 +192,12 @@ def test_final_summary_lists_only_successful_media_from_its_round(env, monkeypat
     compact_config = {**CFG, "compact_mode": True}
     old_task = create(env, "first.mkv", config={})
 
-    def result(task, name, media, status="completed", end_time=None):
+    def result(task, name, media, status="completed", end_time=None, targets="emos"):
         assert operations.record_task(
             str(env.root / name),
             status,
             task_id=task,
-            targets="emos",
+            targets=targets,
             end_time=end_time or datetime.now(),
             media=media,
         )
@@ -211,9 +211,21 @@ def test_final_summary_lists_only_successful_media_from_its_round(env, monkeypat
         telegram_config=compact_config,
     )
     result(old_task, "first.mkv", {**show, "season_episode": "S01E01"})
+    result(old_task, "first.mkv", {**show, "season_episode": "S01E01"})
+    other_target = prepare_task(
+        str(env.root / "first.mkv"),
+        ["p123"],
+        telegram_config=compact_config,
+    )
+    assert other_target != old_task
+    result(other_target, "first.mkv", {**show, "season_episode": "S01E01"}, targets="p123")
 
     for index, episodes in enumerate(
-        ("S01E02", "S01E03", "S01E02", "S02E04", "S02E05-7", "S02E09", "S00E01")
+        (
+            "S01E02-3", "S01E02", "S01E03", "S01E04", "S01E05", "S01E05",
+            "S01E06-7", "S01E06-7", "S01E06-7", "S02E01", "S02E01", "S02E01",
+            "S02E04", "S02E05-7", "S02E04-5", "S02E06-7", "S02E09", "S00E01",
+        )
     ):
         name = f"release-{index}.mkv"
         task = create(env, name, config=compact_config)
@@ -231,7 +243,15 @@ def test_final_summary_lists_only_successful_media_from_its_round(env, monkeypat
         "season_episode": "",
     }
     for name in ("movie-release-a.mkv", "movie-release-b.mkv"):
-        result(create(env, name, config=compact_config), name, movie)
+        task = create(env, name, config=compact_config)
+        result(task, name, movie)
+        result(task, name, movie)
+    single = "single-movie.mkv"
+    result(
+        create(env, single, config=compact_config),
+        single,
+        {**movie, "tmdb_id": "12", "title": "单版本电影"},
+    )
     for status in ("failed", "skipped"):
         name = f"{status}.mkv"
         result(
@@ -268,9 +288,12 @@ def test_final_summary_lists_only_successful_media_from_its_round(env, monkeypat
 
     final = [row for row in deliveries() if row["scope"] == "queue-final:1"][0]
     assert final["text"].split("🎬 本轮已上传片单\n")[1].splitlines() == [
-        "第一部剧: S00E01, S01E01-S01E03, S02E04-S02E07, S02E09",
+        "第一部剧: S00E01, S01E01-S01E07, S02E01, S02E04-S02E07, S02E09",
+        "  多版本：S01E02-S01E03 ×2，S01E05 ×2，S01E06-S01E07 ×3，"
+        "S02E01 ×3，S02E04-S02E07 ×2",
         "第二部剧: S03E01",
-        "电影名",
+        "电影名 ×2",
+        "单版本电影",
     ]
 
 
