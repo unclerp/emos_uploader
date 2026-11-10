@@ -55,6 +55,7 @@ def test_real_parser_and_explicit_tmdb_preserve_season(
     client.search_tv.side_effect = AssertionError("手动指定不能回退搜索")
     r.tmdb_client = client
     result = r.extract_metadata_with_tmdb(name, 42, "tv")
+    assert result["tmdb_title"] == "指定剧集"
     assert (int(result["season"]), int(result["episode"])) == (season, episode)
     client.get_tv_episode_details.assert_called_with(42, season, episode)
 

@@ -349,9 +349,10 @@ class TelegramDispatcher:
             }
             if snapshot["thread_id"] and not snapshot["message_id"]:
                 payload["message_thread_id"] = int(snapshot["thread_id"])
-            if not snapshot["message_id"] and snapshot["scope"].startswith(
-                "queue-overview:"
-            ):
+            silent = snapshot["scope"].startswith(
+                ("queue-overview:", "queue-final-extra:")
+            )
+            if not snapshot["message_id"] and silent:
                 payload["disable_notification"] = True
             if snapshot["message_id"]:
                 payload["message_id"] = snapshot["message_id"]
@@ -383,7 +384,7 @@ class TelegramDispatcher:
                     )
                 ):
                     payload.pop("message_id", None)
-                    if snapshot["scope"].startswith("queue-overview:"):
+                    if silent:
                         payload["disable_notification"] = True
                     if snapshot["thread_id"]:
                         payload["message_thread_id"] = int(snapshot["thread_id"])

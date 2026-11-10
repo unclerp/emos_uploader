@@ -1,5 +1,6 @@
 """队列总览使用真实 SQLite 与假的 Telegram HTTP，不发送测试消息。"""
 
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -185,6 +186,165 @@ def test_throttle_idle_grace_final_summary_and_next_round(env):
     assert [r for r in deliveries() if r["scope"] == "queue-overview:1"][0][
         "text"
     ] == old_text
+
+
+def test_final_summary_lists_only_successful_media_from_its_round(env, monkeypatch):
+    compact_config = {**CFG, "compact_mode": True}
+    old_task = create(env, "first.mkv", config={})
+
+    def result(task, name, media, status="completed", end_time=None):
+        assert operations.record_task(
+            str(env.root / name),
+            status,
+            task_id=task,
+            targets="emos",
+            end_time=end_time or datetime.now(),
+            media=media,
+        )
+
+    show = {"tmdb_id": "10", "media_type": "tv", "title": "第一部剧"}
+    result(old_task, "first.mkv", {**show, "season_episode": "S01E99"})
+    prepare_task(
+        str(env.root / "first.mkv"),
+        ["emos"],
+        task_id=old_task,
+        telegram_config=compact_config,
+    )
+    result(old_task, "first.mkv", {**show, "season_episode": "S01E01"})
+
+    for index, episodes in enumerate(
+        ("S01E02", "S01E03", "S01E02", "S02E04", "S02E05-7", "S02E09", "S00E01")
+    ):
+        name = f"release-{index}.mkv"
+        task = create(env, name, config=compact_config)
+        result(task, name, {**show, "season_episode": episodes})
+
+    other_show = {"tmdb_id": "11", "media_type": "tv", "title": "第二部剧"}
+    retry = create(env, "retry.mkv", config=compact_config)
+    result(retry, "retry.mkv", {**other_show, "season_episode": "S03E01"}, "failed")
+    result(retry, "retry.mkv", {**other_show, "season_episode": "S03E01"})
+
+    movie = {
+        "tmdb_id": "10",
+        "media_type": "movie",
+        "title": "电影名",
+        "season_episode": "",
+    }
+    for name in ("movie-release-a.mkv", "movie-release-b.mkv"):
+        result(create(env, name, config=compact_config), name, movie)
+    for status in ("failed", "skipped"):
+        name = f"{status}.mkv"
+        result(
+            create(env, name, config=compact_config),
+            name,
+            {**movie, "tmdb_id": status, "title": f"忽略-{status}"},
+            status,
+        )
+
+    now = datetime.now()
+    tick(env, now)
+    tick(env, now + timedelta(seconds=6))
+    assert "本轮已上传片单" not in overview()["text"]
+    assert send(env)
+
+    # 等待结束通知投递时重启，并在下一轮复用同一个任务 ID。
+    d = tg.TelegramDispatcher(auto_start=False)
+    monkeypatch.setattr(tg, "get_dispatcher", lambda: d)
+    env.d, env.q = d, d.overview
+    d.configure(compact_config)
+    prepare_task(
+        str(env.root / "first.mkv"),
+        ["emos"],
+        task_id=old_task,
+        telegram_config=compact_config,
+    )
+    result(
+        old_task,
+        "first.mkv",
+        {**show, "season_episode": "S04E88"},
+        end_time=now + timedelta(seconds=7),
+    )
+    tick(env, now + timedelta(seconds=8))
+
+    final = [row for row in deliveries() if row["scope"] == "queue-final:1"][0]
+    assert final["text"].split("🎬 本轮已上传片单\n")[1].splitlines() == [
+        "第一部剧: S00E01, S01E01-S01E03, S02E04-S02E07, S02E09",
+        "第二部剧: S03E01",
+        "电影名",
+    ]
+
+
+def test_long_final_media_list_sends_continuation_silently(env, monkeypatch):
+    lines = [f"电影 {i:02d} {'🎞' * 60}" for i in range(70)]
+    monkeypatch.setattr(
+        "video_organizer.notifications.queue_overview.completed_media_lines",
+        lambda db, run: lines,
+    )
+    now = datetime.now()
+    task = create(env, "file.mkv")
+    finish(env, task, now)
+    assert send(env)
+    tick(env, now + timedelta(seconds=7))
+    assert send(env)
+    first = env.post.call_args.kwargs["json"]
+    assert "disable_notification" not in first
+    pages = [first["text"]]
+    while send(env):
+        payload = env.post.call_args.kwargs["json"]
+        assert payload["disable_notification"] is True
+        pages.append(payload["text"])
+    assert len(pages) > 1
+    assert all(len(page.encode("utf-16-le")) <= 8000 for page in pages)
+    listed = [
+        line for page in pages for line in page.splitlines() if line.startswith("电影 ")
+    ]
+    assert listed == lines
+
+
+def test_upload_worker_uses_matched_title_for_final_media_list(env, monkeypatch):
+    from video_organizer.core.file_handler.handler import VideoFileHandler
+    from video_organizer.core.renamer import VideoRenamer
+
+    config = {**CFG, "compact_mode": True}
+    name = "Local.Release.S00E01.mkv"
+    path = str(env.root / name)
+    task = create(env, name, config=config)
+    renamer = VideoRenamer(tmdb_api_key="", config={})
+    renamer.tmdb_client = Mock()
+    renamer.tmdb_client.get_tv_details.return_value = {"id": 10, "name": "TMDB 匹配剧名"}
+    metadata = renamer.extract_metadata_with_tmdb(path, 10, "tv")
+    uploader = Mock()
+    uploader.upload_video.return_value = {"media_uuid": "test"}
+    monkeypatch.setattr(
+        "video_organizer.upload.emos_uploader.RobustEmosVideoUploader",
+        Mock(return_value=uploader),
+    )
+    h = VideoFileHandler.__new__(VideoFileHandler)
+    h.logger = logging.getLogger(__name__)
+    h._tracked_task_id = task
+    h._uploaded_files = set()
+    h._uploading_files = set()
+    h._failed_files = {}
+    h._cleanup_old_records = Mock()
+    h.upload_targets = ["emos"]
+    h.emos_auth_token = "fake"
+    h.emos_base_url = "https://invalid.example"
+    h.emos_chunk_size_mb = h.emos_max_workers = 1
+    h.emos_file_storage = "test"
+    h.emos_skip_existing_media = True
+    h.telegram_config = config
+    h.emya_enabled = h.delete_after_upload = False
+    h._execute_upload(path, "ve", 1, 1, "10", "tv", "Local Release", "S00E01", metadata)
+    uploader.upload_video.assert_called_once()
+
+    now = datetime.now()
+    tick(env, now)
+    tick(env, now + timedelta(seconds=6))
+    assert send(env)
+    tick(env, now + timedelta(seconds=7))
+    final = next(row["text"] for row in deliveries() if row["scope"] == "queue-final:1")
+    assert final.endswith("\nTMDB 匹配剧名: S00E01")
+    assert "Local Release" not in final
 
 
 def bind_action(task, status="waiting"):

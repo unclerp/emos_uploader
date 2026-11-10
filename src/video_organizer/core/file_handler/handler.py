@@ -1816,11 +1816,24 @@ class VideoFileHandler:
                 # 从上传中集合移除，添加到已上传集合
                 self._uploaded_files.add(file_path)
                 self._failed_files.pop(file_path, None)
+                tmdb_title = metadata.get("tmdb_title")
                 self._record_task(
                     file_path,
                     "skipped" if all_skipped else "completed",
                     error_message="资源已存在，重复上传已跳过" if all_skipped else None,
                     end_time=datetime.now(),
+                    media=(
+                        {
+                            "tmdb_id": tmdb_id,
+                            "media_type": media_type,
+                            "title": tmdb_title,
+                            "season_episode": (
+                                season_episode if media_type == "tv" else ""
+                            ),
+                        }
+                        if not all_skipped and tmdb_id and tmdb_title
+                        else None
+                    ),
                 )
                 self._uploading_files.discard(file_path)
 

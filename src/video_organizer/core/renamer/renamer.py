@@ -573,6 +573,7 @@ class VideoRenamer:
         metadata.update(
             {
                 "tmdb_id": int(tmdb_id),
+                "tmdb_title": title,
                 "media_type": media_type,
                 "title": title,
                 "show_name": title,
@@ -3071,7 +3072,7 @@ class VideoRenamer:
                    "original_name", "poster_path", "backdrop_path", "networks",
                    "number_of_seasons", "number_of_episodes", "first_air_date",
                    "last_air_date", "status", "original_language", "overview", "rating",
-                   "media_type"]:
+                   "media_type", "tmdb_title"]:
             if key in metadata:
                 cache_data[key] = metadata[key]
 
@@ -3254,7 +3255,8 @@ class VideoRenamer:
                     for key in ["show_name", "title", "year", "tmdb_id", "genres", "origin_country",
                                "original_name", "poster_path", "backdrop_path", "networks",
                                "number_of_seasons", "number_of_episodes", "first_air_date",
-                               "last_air_date", "status", "original_language", "overview", "rating"]:
+                               "last_air_date", "status", "original_language", "overview",
+                               "rating", "tmdb_title"]:
                         if key in cached_metadata:
                             metadata[key] = cached_metadata[key]
                     # 恢复当前文件的质量标签
@@ -3331,6 +3333,9 @@ class VideoRenamer:
                             metadata["original_show_name"] = original_name
                             # 丰富元数据，优先使用中文标题
                             metadata["show_name"] = details.get("name", original_name)
+                            metadata["tmdb_title"] = details.get("name") or details.get(
+                                "original_name", ""
+                            )
                             metadata["overview"] = details.get("overview", "")
                             metadata["rating"] = details.get("vote_average", 0)
                             metadata["genres"] = [genre["name"] for genre in details.get("genres", [])]
@@ -3426,6 +3431,9 @@ class VideoRenamer:
                             metadata["original_show_name"] = original_name
                             # 丰富元数据，优先使用中文标题
                             metadata["title"] = details.get("title", original_name)
+                            metadata["tmdb_title"] = details.get("title") or details.get(
+                                "original_title", ""
+                            )
                             metadata["show_name"] = details.get("title", original_name)
                             metadata["overview"] = details.get("overview", "")
                             metadata["rating"] = details.get("vote_average", 0)
@@ -4539,6 +4547,11 @@ class VideoRenamer:
                 metadata["number_of_seasons"] = details.get("number_of_seasons", 0)
                 metadata["number_of_episodes"] = details.get("number_of_episodes", 0)
                 metadata["tmdb_id"] = best_match["id"]
+                metadata["tmdb_title"] = (
+                    details.get("name")
+                    or best_match.get("name")
+                    or details.get("original_name", "")
+                )
 
                 # 内容分级
                 content_ratings = details.get("content_ratings", {}).get("results", [])
@@ -4691,6 +4704,11 @@ class VideoRenamer:
                 # 与 TV 分支一致：搜索命中后立即落 tmdb_id，
                 # 不能只依赖 external_ids 接口（失败/无数据时 tmdb_id 会丢）
                 metadata["tmdb_id"] = best_match["id"]
+                metadata["tmdb_title"] = (
+                    details.get("title")
+                    or best_match.get("title")
+                    or details.get("original_title", "")
+                )
                 # 保存原始标题，并处理None值情况
                 original_title = metadata.get("title")
                 original_show_name = metadata.get("show_name")

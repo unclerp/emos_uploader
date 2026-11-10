@@ -17,6 +17,7 @@ from ..database.models import (
     UploadTask,
 )
 from ..database.session import get_session_local
+from .queue_media import completed_media_lines, summary_pages
 from .telegram import digest, enabled
 
 logger = logging.getLogger(__name__)
@@ -275,8 +276,21 @@ class QueueOverview:
                                     "完整统计见本轮总览消息。",
                                 ]
                             )
-                            if self.dispatcher.submit(
-                                config, f"queue-final:{run.id}", summary, event="queue"
+                            pages = summary_pages(
+                                summary, completed_media_lines(db, run)
+                            )
+                            if all(
+                                self.dispatcher.submit(
+                                    config,
+                                    (
+                                        f"queue-final-extra:{run.id}:{page}"
+                                        if page
+                                        else f"queue-final:{run.id}"
+                                    ),
+                                    content,
+                                    event="queue",
+                                )
+                                for page, content in enumerate(pages)
                             ):
                                 run.summary_queued = True
                         continue

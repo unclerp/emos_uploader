@@ -103,6 +103,7 @@ class TestVideoRenamer:
         result = renamer._enrich_with_tmdb(metadata)
 
         assert result["show_name"] == "Game of Thrones"
+        assert result["tmdb_title"] == "Game of Thrones"
         assert result["year"] == "2011"
 
         # 在 patch 生效后创建 renamer，确保 TMDBClient 被 mock
@@ -115,6 +116,7 @@ class TestVideoRenamer:
         assert result["show_name"] == "Game of Thrones"
         assert result["year"] == "2011"
         assert isinstance(result["tmdb_id"], int)
+        assert result["tmdb_title"] == "Game of Thrones"
 
     @patch("video_organizer.core.renamer.renamer.TMDBClient")
     def test_resolve_ambiguous_type_tv_by_year(self, mock_tmdb_client):

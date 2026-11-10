@@ -151,6 +151,19 @@ class UploadAttempt(Base):
     history_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
 
 
+class UploadMediaResult(Base):
+    """成功上传时保存 TMDB 标题及季集，供本轮片单统计。"""
+
+    __tablename__ = "upload_media_result"
+    history_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=False
+    )
+    tmdb_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    season_episode: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class DownloadFileBinding(Base):
     """qB 种子文件与上传任务的稳定关联，移动不改变上传历史。"""
 

@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from .session import get_session_local, init_db
-from .models import TaskHistory
+from .models import TaskHistory, UploadMediaResult
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ def record_task(
     targets: str = "unknown",
     auto_retry: bool = False,
     telegram_config: Optional[Dict] = None,
+    media: Optional[Dict[str, str]] = None,
 ) -> bool:
     """
     记录任务完成或失败到数据库
@@ -43,6 +44,8 @@ def record_task(
             )
             db.add(record)
             task = append_result(db, record, task_id, targets, auto_retry=auto_retry)
+            if status == "completed" and media:
+                db.add(UploadMediaResult(history_id=record.id, **media))
             db.commit()
             notification = (
                 task.id,
