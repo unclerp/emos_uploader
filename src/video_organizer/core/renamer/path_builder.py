@@ -5,7 +5,7 @@
 import re
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Tuple, Union
 
 from jinja2 import Template
 
@@ -41,7 +41,7 @@ def handle_file_conflict(file_path: Path) -> Path:
 
 
 def safe_int(val, default=1):
-    if not val:
+    if val in (None, ""):
         return default
     if isinstance(val, int):
         return val
@@ -50,23 +50,31 @@ def safe_int(val, default=1):
     return val
 
 
-def _is_special_file(original_path: Optional[Path]) -> bool:
-    """检查是否是 OVA/特别篇文件"""
-    if not original_path or not original_path.name:
-        return False
-    special_patterns = [
-        r"\bOVA\b", r"\bOVA0?1\b", r"\bOVA0?2\b", r"\bOVA0?3\b",
-        r"\bOVA0?4\b", r"\bOVA0?5\b", r"\bOVA0?6\b", r"\bOVA0?7\b",
-        r"\bOVA0?8\b", r"\bOVA0?9\b", r"\bOVA10\b",
-        r"(?<!\w)SP(?!\w)", r"(?<=\[)Special(?=\])",
-        r"\bSpecial\s*(?:Episode|EP|Ep)\b", r"\bSpecial\s*\d+\b",
-        r"\bSpecial\b(?=\s*\.\w+$)", r"特别篇", r"番外篇",
-    ]
-    filename_upper = original_path.name.upper()
-    for pattern in special_patterns:
-        if re.search(pattern, filename_upper, re.IGNORECASE):
-            return True
-    return False
+_SPECIAL_MARKER = re.compile(
+    r"\b(?:OVA|SP)(?P<number>\d+)?\b"
+    r"|(?<=\[)Special(?=\])|\bSpecial\s*(?:Episode|EP|\d+)\b"
+    r"|\bSpecial\b(?=\s*\.\w+$)|特别篇|番外篇",
+    re.IGNORECASE,
+)
+
+
+def resolve_season_episode(
+    metadata: Dict, filename: str, default: Optional[int] = 1
+) -> Tuple[Union[int, str, None], Union[int, str, None]]:
+    """统一命名和上传的季集号，特别篇缺少集号时默认第 1 集。"""
+    season = safe_int(metadata.get("season"), default=None)
+    episode = safe_int(metadata.get("episode"), default=None)
+    if season is not None and episode is not None:
+        return season, episode
+
+    special = _SPECIAL_MARKER.search(filename)
+    if special:
+        season = 0
+        if episode is None:
+            episode = int(special.group("number") or 1)
+    if episode is None:
+        episode = 1 if season == 0 else default
+    return default if season is None else season, episode
 
 
 def generate_new_path(
@@ -107,13 +115,9 @@ def generate_new_path(
 
     template = naming_rules.get(rule_type, naming_rules["simple"])
 
-    is_special = _is_special_file(original_path)
-    if is_special:
-        season = 0
-    else:
-        season = safe_int(metadata.get("season", 1))
-
-    episode = safe_int(metadata.get("episode", 1))
+    season, episode = resolve_season_episode(
+        metadata, original_path.name if original_path else ""
+    )
 
     s_str = f"{season:02d}" if isinstance(season, int) else str(season)
     e_str = f"{episode:02d}" if isinstance(episode, int) else str(episode)

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from ...upload.emos_uploader import RobustEmosVideoUploader
 
 from ..renamer import VideoRenamer
+from ..renamer.path_builder import resolve_season_episode
 from ..tmdb_client import TMDBClient
 from ..subtitle_handler import SubtitleHandler
 from ..downloader import decode_file_path
@@ -1142,7 +1143,7 @@ class VideoFileHandler:
             ]
             for field in important_fields:
                 value = metadata.get(field)
-                if value:
+                if value not in (None, ""):
                     print(f"  [{worker_id}] {field}: {value}")
 
             # 提取所需信息
@@ -1198,59 +1199,11 @@ class VideoFileHandler:
             )
 
             # 季集信息处理
-            season = metadata.get("season")
-            episode = metadata.get("episode")
-            season_episode = ""
-
-            # 添加特别篇检测逻辑，与renamer.py中的generate_new_path方法保持一致
-            if season is None or episode is None:
-                # 检查文件名是否包含特别篇标识
-                filename = os.path.basename(file_path)
-                special_keywords = [
-                    "OVA",
-                    "SP",
-                    "Special",
-                    "特别篇",
-                    "番外篇",
-                    "OVA01",
-                    "OVA02",
-                    "OVA03",
-                    "OVA04",
-                    "OVA05",
-                    "OVA06",
-                    "OVA07",
-                    "OVA08",
-                    "OVA09",
-                    "OVA10",
-                ]
-                filename_upper = filename.upper()
-                for keyword in special_keywords:
-                    if keyword in filename_upper:
-                        # 如果是特别篇，设置季数为0，集数从文件名提取
-                        season = 0
-                        # 尝试从文件名提取集数
-                        import re
-
-                        episode_match = re.search(r"(?:OVA|SP)(\d+)", filename_upper)
-                        if episode_match:
-                            episode = episode_match.group(1)
-                        break
-                if season is None or episode is None:
-                    season = 1
-                    episode = 1
-
-            if season is not None and episode is not None:
-                try:
-                    # 尝试格式化为 SxxExx
-                    s_num = int(season)
-                    e_num = int(episode)
-                    season_episode = f"S{s_num:02d}E{e_num:02d}"
-                except:
-                    # 如果转换整数失败，直接拼接
-                    season_episode = f"S{season}E{episode}"
-            else:
-                # 如果季集信息缺失，保持为空字符串
-                season_episode = ""
+            season, episode = resolve_season_episode(metadata, Path(file_path).name)
+            try:
+                season_episode = f"S{int(season):02d}E{int(episode):02d}"
+            except (TypeError, ValueError):
+                season_episode = f"S{season}E{episode}"
 
             # 输出获取到的信息
             console_log(f"\n[线程#{worker_id}] 文件信息 (本地识别):")

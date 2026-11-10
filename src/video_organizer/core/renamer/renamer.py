@@ -25,7 +25,7 @@ from ..media_type_resolver import MediaTypeResolver
 
 from .chinese_utils import decode_filename, roman_to_digit, chinese_to_digit
 from .category_detector import DEFAULT_RELEASE_GROUP_MAPPING, determine_category, determine_anime_subcategory
-from .path_builder import sanitize_filename, handle_file_conflict
+from .path_builder import sanitize_filename, handle_file_conflict, resolve_season_episode
 
 # 繁简转换支持
 try:
@@ -606,6 +606,11 @@ class VideoRenamer:
             ):
                 metadata.pop(key, None)
         else:
+            season, episode = resolve_season_episode(
+                metadata, Path(file_path).name, default=None
+            )
+            if season == 0:
+                metadata.update(season=season, episode=episode)
             self._ensure_season(metadata, entry_year)
             if (
                 metadata.get("season") is not None
@@ -4873,53 +4878,9 @@ class VideoRenamer:
         # 获取对应的命名模板
         template = self.naming_rules.get(rule_type, self.naming_rules["simple"])
 
-        # 准备用于格式化的变量字典，优先使用原始标题
-        def safe_int(val, default=1):
-            if val in (None, ""):
-                return default
-            if isinstance(val, int):
-                return val
-            if str(val).isdigit():
-                return int(val)
-            return val  # 保持为字符串 (如 115-120)
-
-        # 检查是否是OVA/特别篇，如果是则设置为Season 0
-        is_special = False
-        if original_path and original_path.name:
-            # 检查文件名是否包含特别篇标识（使用正则表达式精确匹配，避免部分匹配）
-            special_patterns = [
-                r"\bOVA\b",  # 匹配独立的OVA
-                r"\bOVA0?1\b",
-                r"\bOVA0?2\b",
-                r"\bOVA0?3\b",
-                r"\bOVA0?4\b",
-                r"\bOVA0?5\b",
-                r"\bOVA0?6\b",
-                r"\bOVA0?7\b",
-                r"\bOVA0?8\b",
-                r"\bOVA0?9\b",
-                r"\bOVA10\b",
-                r"(?<!\w)SP(?!\w)",  # 匹配独立的SP，排除SPY等词
-                r"(?<=\[)Special(?=\])",  # [Special] 格式
-                r"\bSpecial\s*(?:Episode|EP|Ep)\b",  # Special Episode 格式
-                r"\bSpecial\s*\d+\b",  # Special 01 格式
-                r"\bSpecial\b(?=\s*\.\w+$)",  # Special.mkv 格式（在文件名末尾）
-                r"特别篇",  # 中文关键词
-                r"番外篇",  # 中文关键词
-            ]
-            filename_upper = original_path.name.upper()
-            for pattern in special_patterns:
-                if re.search(pattern, filename_upper, re.IGNORECASE):
-                    is_special = True
-                    break
-
-        # 如果是特别篇，设置季数为0，否则使用正常的安全转换
-        if is_special:
-            season = 0
-        else:
-            season = safe_int(metadata.get("season", 1))
-
-        episode = safe_int(metadata.get("episode", 1))
+        season, episode = resolve_season_episode(
+            metadata, original_path.name if original_path else ""
+        )
 
         # 补零辅助
         s_str = f"{season:02d}" if isinstance(season, int) else str(season)

@@ -1182,7 +1182,7 @@ async function validateScrape() {
                         <div>${result.year || '-'}</div></div>
                     <div class="form-group"><label class="form-label">媒体类型</label>
                         <span class="badge badge-info">${typeLabel}</span></div>
-                    ${result.season ? `<div class="form-group"><label class="form-label">季</label><div>${result.season}</div></div>` : ''}
+                    ${result.season != null ? `<div class="form-group"><label class="form-label">季</label><div>${result.season}</div></div>` : ''}
                     ${result.episode ? `<div class="form-group"><label class="form-label">集</label><div>${result.episode}</div></div>` : ''}
                     ${result.episode_title ? `<div class="form-group" style="grid-column:1/-1"><label class="form-label">集标题</label><div>${escapeHtml(result.episode_title)}</div></div>` : ''}
                     ${result.quality_tags ? `<div class="form-group"><label class="form-label">质量标签</label><div>${escapeHtml(result.quality_tags)}</div></div>` : ''}
