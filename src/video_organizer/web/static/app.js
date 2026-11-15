@@ -178,6 +178,7 @@ function bindEvents() {
     });
     el.reloadConfigBtn.addEventListener('click', reloadConfig);
     setInterval(refreshConfigApplicationStatus, 5000);
+    setInterval(refreshSeekStatus, 5000);
     el.saveConfigBtn.addEventListener('click', saveConfig);
     el.logFileSelect.addEventListener('change', loadLogContent);
     el.liveLogCheck.addEventListener('change', toggleLiveLog);
@@ -584,7 +585,9 @@ async function loadConfig() {
 function configEntries(section) {
     return Object.entries(state.config?.[section] || {}).filter(([key]) =>
         (section !== 'manual_rules' || !key.startsWith('rule') || key === 'rules') &&
-        (section !== 'processing' || key !== 'delete_after_upload'));
+        (section !== 'processing' || key !== 'delete_after_upload') &&
+        (section !== 'telegram' || key !== 'channel_chat_id') &&
+        (section !== 'recycle_clean' || key !== 'notify_telegram'));
 }
 
 function updateConfigBadges() {
@@ -680,9 +683,20 @@ function renderIniConfigEditor(section) {
             html += renderConfigField(section, k, v);
         }
     }
-    html += `</div></div>`;
+    html += '</div>';
+    if (section === 'telegram_seek') {
+        html += `<div class="add-row-bar">
+            <button class="btn btn-secondary btn-sm" id="seekTestBtn" type="button">发送测试消息</button>
+            <div id="seekStatus" role="status"></div>
+        </div>`;
+    }
+    html += '</div>';
     el.configEditor.innerHTML = html;
     applyConfigSearch();
+    if (section === 'telegram_seek') {
+        document.getElementById('seekTestBtn').onclick = testSeekNotification;
+        refreshSeekStatus();
+    }
 
     document.querySelectorAll('#config-editor .toggle-track').forEach(track => {
         track.addEventListener('click', () => {
@@ -702,7 +716,9 @@ function getSectionLabel(section) {
         'processing': '处理配置', 'logging': '日志配置',
         'p123': '123云盘', 'cloud189': '天翼云盘', 'yun139': '139云盘',
         'recycle_clean': '回收站清理',
-        'emos': 'Emos 云盘', 'telegram': 'Telegram', 'guessit': 'GuessIt 解析',
+        'emos': 'Emos 云盘', 'telegram': 'Telegram 上传通知',
+        'telegram_cloud': 'Telegram 网盘通知', 'telegram_seek': 'Telegram 求片通知',
+        'guessit': 'GuessIt 解析',
         'emya_db': 'Emby 数据库', 'downloaders': '下载器列表',
         'manual_rules': '手动规则（INI）', 'release_group_mapping': '字幕组映射（INI）',
         'llm_fallback': 'LLM 兜底识别', 'llm_provider_1': 'LLM 提供商 1',
@@ -750,11 +766,20 @@ function renderConfigField(section, key, value) {
         inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" autocomplete="off" data-lpignore="true" data-1p-ignore="true" spellcheck="false">`;
     }
 
-    const telegramLabels = {enabled:'启用 Telegram 通知',bot_token:'Bot Token',chat_id:'接收通知的 Chat ID',thread_id:'群组话题 ID',channel_chat_id:'额外推送频道（可选）',compact_mode:'批量简洁模式',queue_idle_seconds:'本轮结束空闲等待（秒）',failure_window_seconds:'失败合并窗口（秒）',notify_queue:'队列总览',auto_pin_queue:'自动置顶队列总览',notify_progress:'上传进度',notify_success:'上传成功及重试解决',notify_failure:'上传或识别失败',notify_skipped:'重复资源跳过',notify_post_upload:'上传后移动／删除及清理结果'};
-    const telegramHelp = {compact_mode:'总览保持 5 秒刷新并显示单文件进度；普通成功、跳过和移动成功不另发。失败合并提醒，操作失败独立提醒。关闭恢复详细模式；关闭队列总览时自动使用详细模式。',notify_queue:'每轮独立总览，统计成功、跳过、失败、处理中和等待；结束后另发简短总结。',auto_pin_queue:'置顶新一轮总览后，仅取消上一轮总览的置顶。群组或频道需授予 Bot 对应的置顶权限。',thread_id:'仅群组话题需要填写；普通聊天、群组或频道请留空。',channel_chat_id:'留空不推送额外频道。填写后才发送网盘链接或秒传信息，请确认目标频道。',enabled:'需同时填写 Bot Token 和接收通知的 Chat ID；通知在后台发送。'};
-    if (section === 'telegram') {
+    const telegramLabels = {enabled:'启用 Telegram 通知',bot_token:'Bot Token',chat_id:'接收通知的 Chat ID',thread_id:'群组话题 ID',channel_chat_id:'额外推送频道（可选）',compact_mode:'批量简洁模式',queue_idle_seconds:'本轮结束空闲等待（秒）',failure_window_seconds:'失败合并窗口（秒）',notify_queue:'队列总览',auto_pin_queue:'自动置顶队列总览',notify_progress:'上传进度',notify_success:'上传成功及重试解决',notify_failure:'上传或识别失败',notify_skipped:'重复资源跳过',notify_post_upload:'上传后移动／删除',notify_links:'网盘链接和秒传信息',notify_recycle:'回收站清理结果',poll_interval:'轮询间隔（秒）'};
+    const telegramHelp = {compact_mode:'总览保持 5 秒刷新并显示单文件进度；普通成功、跳过和移动成功不另发。失败合并提醒，操作失败独立提醒。关闭恢复详细模式；关闭队列总览时自动使用详细模式。',notify_queue:'每轮独立总览，统计成功、跳过、失败、处理中和等待；结束后另发简短总结。',auto_pin_queue:'置顶新一轮总览后，仅取消上一轮总览的置顶。群组或频道需授予 Bot 对应的置顶权限。',thread_id:'仅群组话题需要填写；普通聊天、群组或频道请留空。',channel_chat_id:'填写后将网盘链接和秒传信息发到该频道；留空则使用本区的 Chat ID 和话题。',enabled:'需同时填写 Bot Token 和接收通知的 Chat ID；通知在后台发送。'};
+    if (['telegram', 'telegram_cloud', 'telegram_seek'].includes(section)) {
         label = telegramLabels[key] || key;
         help = telegramHelp[key];
+        if (section === 'telegram_cloud' && key === 'enabled') {
+            help = '保存任何网盘通知设置后，本区独立生效。初始值沿用原 Telegram 设置。';
+        }
+        if (section === 'telegram_seek' && key === 'enabled') {
+            help = '需填写求片 Bot Token、Chat ID 和 Emos 云盘的认证令牌。首次成功查询只建立快照。';
+        }
+        if (section === 'telegram_seek' && key === 'poll_interval') {
+            help = '默认 120 秒，从上一次查询结束后开始计时。';
+        }
     }
     return `<div class="config-field">
         <div class="config-field-label">
@@ -887,6 +912,51 @@ async function refreshConfigApplicationStatus() {
     }
 }
 
+async function refreshSeekStatus() {
+    const panel = document.getElementById('seekStatus');
+    if (!panel || panel.dataset.loading) return;
+    panel.dataset.loading = '1';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+        const result = await apiRequest('/config/telegram-seek/status', { signal: controller.signal });
+        const checked = result.last_success_at
+            ? new Intl.DateTimeFormat('zh-CN', {
+                dateStyle: 'short', timeStyle: 'medium', timeZone: 'Asia/Shanghai'
+            }).format(new Date(result.last_success_at))
+            : '暂无';
+        panel.textContent = [
+            result.enabled ? '轮询已启用' : '轮询未启用',
+            `上次成功查询 ${checked}`,
+            result.query_error,
+            result.delivery_error,
+        ].filter(Boolean).join(' · ');
+    } catch (error) {
+        panel.textContent = `求片状态读取失败：${error.message}`;
+    } finally {
+        clearTimeout(timeout);
+        delete panel.dataset.loading;
+    }
+}
+
+async function testSeekNotification() {
+    const button = document.getElementById('seekTestBtn');
+    const data = Object.fromEntries(['bot_token', 'chat_id', 'thread_id'].map(
+        key => [key, document.getElementById(`cfg-telegram_seek-${key}`).value.trim()]
+    ));
+    setButtonLoading(button, true);
+    try {
+        const result = await apiRequest('/config/telegram-seek/test', {
+            method: 'POST', body: JSON.stringify(data)
+        });
+        showToast(result.message, 'success');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        setButtonLoading(button, false);
+    }
+}
+
 // ===== 保存 / 重新加载 INI 配置 =====
 
 async function reloadConfig() {
@@ -931,7 +1001,8 @@ async function saveConfig() {
         let value = input.value;
         if (input.type === 'checkbox') {
             value = input.checked;
-        } else if (!isNaN(Number(value)) && value.trim() !== '') {
+        } else if ((!section.startsWith('telegram') || typeof state.config[section]?.[key] === 'number') &&
+                   !isNaN(Number(value)) && value.trim() !== '') {
             const num = Number(value);
             if (Number.isFinite(num)) value = num;
         }

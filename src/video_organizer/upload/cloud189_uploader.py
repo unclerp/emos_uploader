@@ -32,7 +32,7 @@ def _report_progress(file_path, filename, uploader, progress, uploaded_bytes, to
         pass  # 忽略进度报告错误
 
 
-from ..notifications.telegram import notified_upload, notify_progress, notify_channel
+from ..notifications.telegram import notified_upload, notify_progress, notify_channel, cloud_link_config
 
 class Cloud189Uploader:
     """天翼云盘上传器"""
@@ -77,7 +77,7 @@ class Cloud189Uploader:
         # TG 通知相关
         self.tg_bot_token = self.telegram_config.get("bot_token", "")
         self.tg_chat_id = self.telegram_config.get("chat_id", "")
-        self.tg_channel_chat_id = self.telegram_config.get("channel_chat_id", "")  # 频道ID
+        self.tg_channel_chat_id = cloud_link_config(self.telegram_config).get("chat_id", "")  # 频道ID
         self._tg_message_ids: Dict[str, Optional[int]] = {}
         self.tg_last_update_time = 0
         self.tg_update_interval = 2

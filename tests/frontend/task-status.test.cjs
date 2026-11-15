@@ -114,7 +114,7 @@ for (const [action,legacy,expected] of [['',true,'delete'],['',false,'keep'],['k
 
 test('Telegram 页面显示独立通知开关和明确的额外频道说明', () => {
     const p = page([]);
-    for (const [key,label] of [['compact_mode','批量简洁模式'],['notify_queue','队列总览'],['auto_pin_queue','自动置顶队列总览'],['notify_success','上传成功及重试解决'],['notify_failure','上传或识别失败'],['notify_skipped','重复资源跳过'],['notify_post_upload','上传后移动／删除及清理结果']]) {
+    for (const [key,label] of [['compact_mode','批量简洁模式'],['notify_queue','队列总览'],['auto_pin_queue','自动置顶队列总览'],['notify_success','上传成功及重试解决'],['notify_failure','上传或识别失败'],['notify_skipped','重复资源跳过'],['notify_post_upload','上传后移动／删除']]) {
         const html=p.run(`renderConfigField('telegram',${JSON.stringify(key)},true)`);
         assert.ok(html.includes(label));
         assert.ok(html.includes(`name="telegram.${key}"`));
@@ -122,7 +122,6 @@ test('Telegram 页面显示独立通知开关和明确的额外频道说明', ()
     for (const [key, description] of [
         ['enabled', '需同时填写 Bot Token'],
         ['thread_id', '仅群组话题需要填写'],
-        ['channel_chat_id', '留空不推送额外频道'],
         ['compact_mode', '总览保持 5 秒刷新'],
         ['notify_queue', '每轮独立总览'],
         ['auto_pin_queue', '置顶新一轮总览后'],
@@ -132,6 +131,21 @@ test('Telegram 页面显示独立通知开关和明确的额外频道说明', ()
         assert.ok(html.includes(`aria-describedby="${helpId}">?</button>`));
         assert.ok(html.includes(`id="${helpId}" class="field-help-tooltip" role="tooltip" popover="auto">${description}`));
         assert.ok(!html.includes('<small>'));
+    }
+});
+
+test('网盘和求片有独立的表单字段与浮层提示', () => {
+    const p = page([]);
+    for (const [section, key, text] of [
+        ['telegram_cloud', 'channel_chat_id', '填写后将网盘链接和秒传信息发到该频道'],
+        ['telegram_cloud', 'notify_recycle', '回收站清理结果'],
+        ['telegram_cloud', 'notify_links', '网盘链接和秒传信息'],
+        ['telegram_seek', 'enabled', '首次成功查询只建立快照'],
+        ['telegram_seek', 'poll_interval', '默认 120 秒'],
+    ]) {
+        const html = p.run(`renderConfigField('${section}','${key}',true)`);
+        assert.ok(html.includes(`name="${section}.${key}"`));
+        assert.ok(html.includes(text));
     }
 });
 

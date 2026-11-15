@@ -14,6 +14,7 @@ import requests
 
 from sqlalchemy import and_, or_, case
 
+from ..core.telegram_config import cloud_config, legacy_cloud_config, link_config
 from ..database.models import TelegramDelivery
 from ..database.session import get_session_local
 
@@ -38,12 +39,14 @@ def install_log_redaction():
 
 
 def enabled(config, event="progress"):
+    event_allowed = event is None or str(config.get("notify_" + event, True)).lower() not in (
+        "false", "0", "off", "no"
+    )
     return (
         str(config.get("enabled", True)).lower() not in ("false", "0", "off", "no")
         and bool(str(config.get("bot_token", "") or "").strip())
         and bool(str(config.get("chat_id", "") or "").strip())
-        and str(config.get("notify_" + event, True)).lower()
-        not in ("false", "0", "off", "no")
+        and event_allowed
     )
 
 
@@ -82,6 +85,8 @@ class TelegramDispatcher:
         self.latest_details = {}
         self._failures = None
         self._overview = None
+        self._routes = None
+        self._seek = None
 
     @property
     def overview(self):
@@ -102,13 +107,8 @@ class TelegramDispatcher:
             return self._failures
 
     def register(self, config):
-        if not enabled(config):
-            # 即使关闭进度通知，最终通知也需要启动投递线程。
-            if not any(
-                enabled(config, e)
-                for e in ("success", "failure", "skipped", "post_upload", "queue")
-            ):
-                return
+        if not enabled(config, None):
+            return
         token = str(config["bot_token"]).strip()
         install_log_redaction()
         with self.lock:
@@ -123,6 +123,78 @@ class TelegramDispatcher:
             self._configure(config)
         except Exception:
             logger.warning("Telegram 通知恢复暂不可用，配置和上传继续运行")
+
+    @property
+    def seek(self):
+        with self.lock:
+            if self._seek is None:
+                from .seek import SeekMonitor
+
+                self._seek = SeekMonitor(self)
+            return self._seek
+
+    @staticmethod
+    def delivery_target(config):
+        return (
+            digest(str(config["bot_token"]).strip()),
+            str(config["chat_id"]).strip(),
+            str(config.get("thread_id") or "").strip(),
+        )
+
+    def configure_application(self, config):
+        cloud = cloud_config(config)
+        seek = config.get("telegram_seek", {"enabled": False})
+        routes = (
+            ("channel:", link_config(cloud), "links"),
+            ("recycle:", cloud, "recycle"),
+            ("seek:", seek, "seek"),
+        )
+        active = {
+            prefix: settings for prefix, settings, event in routes
+            if enabled(settings, event)
+        }
+        with self.lock:
+            self._routes = {
+                prefix: self.delivery_target(settings)
+                for prefix, settings in active.items()
+            }
+            try:
+                with get_session_local()() as db:
+                    for prefix, (bot, chat, thread) in self._routes.items():
+                        db.query(TelegramDelivery).filter(
+                            TelegramDelivery.scope.startswith(prefix),
+                            TelegramDelivery.bot_key == bot,
+                            TelegramDelivery.chat_id == chat,
+                            TelegramDelivery.thread_id == thread,
+                            TelegramDelivery.pending.is_(True),
+                            TelegramDelivery.blocked.is_(True),
+                        ).update(
+                            {TelegramDelivery.blocked: False,
+                             TelegramDelivery.next_attempt_at: datetime.now()},
+                            synchronize_session=False,
+                        )
+                    db.commit()
+            except Exception:
+                logger.warning("Telegram 网盘和求片通知恢复暂不可用")
+            for settings in active.values():
+                self.register(settings)
+            self.seek.configure(seek, config.get("emos", {}))
+            self.configure(config.get("telegram", {}))
+
+    def _active_routes(self):
+        prefixes = ("channel:", "recycle:", "seek:")
+        return or_(
+            and_(*(~TelegramDelivery.scope.startswith(prefix) for prefix in prefixes)),
+            *(
+                and_(
+                    TelegramDelivery.scope.startswith(prefix),
+                    TelegramDelivery.bot_key == bot,
+                    TelegramDelivery.chat_id == chat,
+                    TelegramDelivery.thread_id == thread,
+                )
+                for prefix, (bot, chat, thread) in self._routes.items()
+            ),
+        )
 
     def _configure(self, config):
         channel_config = dict(config, chat_id=channel_destination(config), thread_id="")
@@ -165,6 +237,8 @@ class TelegramDispatcher:
                 .all()
             )
             for row in rows:
+                if self._routes is not None and row.scope.startswith(("channel:", "recycle:", "seek:")):
+                    continue
                 if compact(config) and row.scope.startswith(("task:", "file:")):
                     row.pending = False
                     continue
@@ -252,44 +326,9 @@ class TelegramDispatcher:
         ):
             return False
         try:
-            token = str(config["bot_token"]).strip()
-            bot_key = digest(token)
-            chat_id, thread_id = (
-                str(config["chat_id"]).strip(),
-                str(config.get("thread_id", "") or "").strip(),
-            )
-            if thread_id and (not thread_id.isdigit() or int(thread_id) <= 0):
-                raise ValueError("thread_id 必须为正整数")
-            identity = digest("\0".join((bot_key, chat_id, thread_id, scope)))
-            # 保守控制 UTF-16 长度，文件名中的特殊字符作为纯文本发送。
-            text = safe_text(config, text)
-            now = datetime.now()
             with self.lock, get_session_local()() as db:
-                row = db.get(TelegramDelivery, identity)
-                if row is not None and row.terminal and not terminal and not restart:
-                    return False  # 同次尝试迟到的进度不能覆盖最终状态。
-                if row is None:
-                    row = TelegramDelivery(
-                        identity=identity,
-                        bot_key=bot_key,
-                        scope=scope,
-                        chat_id=chat_id,
-                        thread_id=thread_id,
-                        text=text,
-                        revision=0,
-                        delivered_revision=0,
-                    )
-                    db.add(row)
-                if row.text == text and row.revision and row.terminal == terminal:
-                    self.register(config)
-                    self.wake.set()
-                    return True
-                row.text, row.terminal, row.updated_at = text, terminal, now
-                row.revision = (row.revision or 0) + 1
-                row.pending = True
-                # 新状态不绕过 Telegram 已给出的 retry_after，也不解除权限错误的暂停。
-                if row.next_attempt_at is None:
-                    row.next_attempt_at = now
+                if not self.stage(db, config, scope, text, terminal, restart):
+                    return False
                 db.commit()
             self.register(config)
             self.wake.set()
@@ -297,6 +336,33 @@ class TelegramDispatcher:
         except Exception:
             logger.warning("Telegram 通知暂存失败，上传状态不受影响")
             return False
+
+    def stage(self, db, config, scope, text, terminal=True, restart=False):
+        """在调用方事务内暂存通知，由调用方在提交后唤醒投递线程。"""
+        bot_key, chat_id, thread_id = self.delivery_target(config)
+        if thread_id and (not thread_id.isdigit() or int(thread_id) <= 0):
+            raise ValueError("thread_id 必须为正整数")
+        identity = digest("\0".join((bot_key, chat_id, thread_id, scope)))
+        text = safe_text(config, text)
+        row = db.get(TelegramDelivery, identity)
+        if row is not None and row.terminal and not terminal and not restart:
+            return False
+        if row is None:
+            row = TelegramDelivery(
+                identity=identity, bot_key=bot_key, scope=scope,
+                chat_id=chat_id, thread_id=thread_id, text=text,
+                revision=0, delivered_revision=0,
+            )
+            db.add(row)
+        if row.text == text and row.revision and row.terminal == terminal:
+            return True
+        now = datetime.now()
+        row.text, row.terminal, row.updated_at = text, terminal, now
+        row.revision = (row.revision or 0) + 1
+        row.pending = True
+        if row.next_attempt_at is None:
+            row.next_attempt_at = now
+        return True
 
     def send_once(self):
         """单独投递一个快照，便于无网络测试；只由后台线程调用。"""
@@ -314,6 +380,7 @@ class TelegramDispatcher:
                         TelegramDelivery.pending.is_(True),
                         TelegramDelivery.blocked.is_(False),
                         TelegramDelivery.next_attempt_at <= now,
+                        self._active_routes() if self._routes is not None else True,
                     )
                     .order_by(
                         case(
@@ -600,13 +667,22 @@ def channel_destination(config):
     return channel
 
 
-def notify_channel(config, text, scope):
-    config = dict(config)
-    channel = channel_destination(config)
-    if not channel:
-        return False
-    config["chat_id"], config["thread_id"] = channel, ""
-    return get_dispatcher().submit(config, "channel:" + scope, text, event="success")
+def cloud_link_config(config, destination=None):
+    cloud = config.get("_cloud")
+    if cloud is None:
+        upload = dict(config)
+        if destination:
+            upload["channel_chat_id"] = destination
+        cloud = legacy_cloud_config(upload)
+    settings = link_config(cloud)
+    return settings if enabled(settings, "links") else {}
+
+
+def notify_channel(config, text, scope, destination=None):
+    settings = cloud_link_config(config, destination)
+    return bool(settings) and get_dispatcher().submit(
+        settings, "channel:" + scope, text, event="links"
+    )
 
 
 def notify_post_action(config, action):

@@ -420,7 +420,7 @@ class LiveConfig:
                 if self.current and config == self.current.config:
                     from ...notifications.telegram import get_dispatcher
 
-                    get_dispatcher().configure(config.get("telegram", {}))
+                    get_dispatcher().configure_application(config)
                     self.last_status, self.last_error = "applied", ""
                     return {
                         "applied": True,
@@ -456,7 +456,7 @@ class LiveConfig:
                     self.current = candidate
                     from ...notifications.telegram import get_dispatcher
 
-                    get_dispatcher().configure(config.get("telegram", {}))
+                    get_dispatcher().configure_application(config)
                     if self.monitor and candidate.monitor:
                         self.monitor.config = config
                         self.monitor.event_handler = candidate.handler

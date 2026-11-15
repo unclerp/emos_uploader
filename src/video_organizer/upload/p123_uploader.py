@@ -57,7 +57,7 @@ from .pan123_client import (
 )
 
 
-from ..notifications.telegram import notified_upload, notify_progress, notify_channel
+from ..notifications.telegram import notified_upload, notify_progress, notify_channel, cloud_link_config
 
 class P123Uploader:
     """123云盘上传器（支持文件夹管理和TG通知）"""
@@ -90,9 +90,7 @@ class P123Uploader:
         self.root_parent_id = parent_id
         self.telegram_config = telegram_config or {}
         self.max_workers = max_workers
-        self.tg_channel_123fslink = tg_channel_123fslink or self.telegram_config.get(
-            "channel_chat_id", ""
-        )
+        self.tg_channel_123fslink = tg_channel_123fslink or cloud_link_config(self.telegram_config).get("chat_id", "")
         self.client = Pan123Client(token=token, username=username, password=password)
 
         # TG 通知相关
@@ -314,7 +312,7 @@ class P123Uploader:
                 )
 
                 # 发送 123FSLinkV2 格式到TG频道
-                if self.tg_bot_token and self.tg_channel_123fslink:
+                if self.tg_channel_123fslink:
                     self.send_123fslinkv2_to_tg(
                         file_path,
                         target_filename,
@@ -788,10 +786,6 @@ class P123Uploader:
         Returns:
             是否发送成功
         """
-        if not self.tg_bot_token:
-            print(f"[WARNING] TG bot token 未配置，跳过 123FSLinkV2 通知")
-            return False
-
         tg_channel = str(tg_channel or "").strip()
         if not tg_channel:
             return False
@@ -810,10 +804,10 @@ class P123Uploader:
 
         from ..notifications.telegram import digest
 
-        config = dict(self.telegram_config, channel_chat_id=tg_channel)
         message_text = f"📤 123云盘上传完成\n路径：{folder_path or ''}\n文件：{file_name}\n格式：{link_v2}"
         return notify_channel(
-            config,
+            self.telegram_config,
             message_text,
             "p123:" + digest(str(Path(file_path).absolute()) + link_v2),
+            destination=tg_channel,
         )

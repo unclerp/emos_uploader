@@ -280,7 +280,12 @@ class VideoFileHandler:
         self.yun139_generate_strm = self.yun139_config.get("generate_strm", True)
 
         # 初始化 Telegram 配置
-        self.telegram_config = telegram_config or {}
+        from ..telegram_config import cloud_config
+
+        self.telegram_config = dict(telegram_config or {})
+        self.telegram_config["_cloud"] = cloud_config(
+            dict(config or {}, telegram=self.telegram_config)
+        )
 
         # 初始化 123 云盘上传器
         self.p123_uploader = None

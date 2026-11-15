@@ -5,6 +5,7 @@
 """
 
 import logging
+import re
 import threading
 from functools import wraps
 from datetime import datetime
@@ -15,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..services.state import get_state_manager
+from ...core.telegram_config import cloud_config
 from ...database.session import get_session_local
 from ...database.models import ManualRule, ReleaseGroupMapping, LlmProvider, RuntimeConfig
 
@@ -44,6 +46,12 @@ class ConfigSectionUpdateRequest(BaseModel):
     section: str
     values: Dict[str, Any]
     replace: bool = False
+
+
+class SeekTestRequest(BaseModel):
+    bot_token: str
+    chat_id: str
+    thread_id: str = ""
 
 
 class ConfigResponse(BaseModel):
@@ -399,11 +407,36 @@ def config_application_status():
     }
 
 
+@router.get("/telegram-seek/status")
+def telegram_seek_status():
+    from ...notifications.telegram import get_dispatcher
+
+    return get_dispatcher().seek.status()
+
+
+@router.post("/telegram-seek/test")
+def telegram_seek_test(request: SeekTestRequest):
+    from ...notifications.seek import send_test
+
+    bot_token, chat_id, thread_id = (
+        request.bot_token.strip(), request.chat_id.strip(), request.thread_id.strip()
+    )
+    if not re.fullmatch(r"\d+:[A-Za-z0-9_-]+", bot_token) or not chat_id:
+        raise HTTPException(status_code=422, detail="请填写有效的 Bot Token 和 Chat ID")
+    if thread_id and (not thread_id.isdigit() or int(thread_id) <= 0):
+        raise HTTPException(status_code=422, detail="群组话题 ID 必须是正整数")
+    error = send_test(bot_token, chat_id, thread_id)
+    if error:
+        raise HTTPException(status_code=502, detail=error)
+    return {"success": True, "message": "测试消息已发送"}
+
+
 @router.get("", response_model=ConfigResponse)
 async def get_config():
     try:
         state = get_state_manager()
         config = state.get_saved_config()
+        config.setdefault("telegram_cloud", cloud_config(config))
         return ConfigResponse(success=True, message="获取配置成功", config=config)
     except Exception as e:
         logger.error(f"获取配置失败: {e}")
@@ -415,6 +448,8 @@ async def get_config_section(section: str):
     try:
         state = get_state_manager()
         config = state.get_saved_config()
+        if section == "telegram_cloud":
+            config.setdefault(section, cloud_config(config))
         if section not in config:
             raise HTTPException(status_code=404, detail=f"配置节 '{section}' 不存在")
         return ConfigResponse(
@@ -433,6 +468,8 @@ async def get_config_section(section: str):
 def update_config_item(request: ConfigUpdateRequest):
     state = get_state_manager()
     config = state.get_saved_config()
+    if request.section == "telegram_cloud":
+        config.setdefault(request.section, cloud_config(config))
     if request.section not in config:
         raise HTTPException(status_code=404, detail="配置节不存在")
     config[request.section][request.key] = request.value
@@ -450,6 +487,8 @@ def update_config_section(request: ConfigSectionUpdateRequest):
         raise HTTPException(
             status_code=422, detail="字幕组类型必须为 anime、drama 或 movie"
         )
+    if not request.replace and request.section == "telegram_cloud":
+        config.setdefault(request.section, cloud_config(config))
     if request.replace or request.section not in config:
         config[request.section] = {}
     config[request.section].update(request.values)

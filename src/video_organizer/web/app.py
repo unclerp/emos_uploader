@@ -76,7 +76,7 @@ def create_app(
 
     from ..notifications.telegram import get_dispatcher
 
-    get_dispatcher().configure(config.get("telegram", {}))
+    get_dispatcher().configure_application(config)
     app = FastAPI(
         title=title,
         version=version,

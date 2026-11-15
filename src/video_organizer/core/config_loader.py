@@ -144,6 +144,22 @@ DEFAULT_CONFIG = {
         "notify_skipped": True,
         "notify_post_upload": True,
     },
+    "telegram_cloud": {
+        "enabled": False,
+        "bot_token": "",
+        "chat_id": "",
+        "thread_id": "",
+        "channel_chat_id": "",
+        "notify_links": True,
+        "notify_recycle": True,
+    },
+    "telegram_seek": {
+        "enabled": False,
+        "bot_token": "",
+        "chat_id": "",
+        "thread_id": "",
+        "poll_interval": 120,
+    },
     "llm_fallback": {"enabled": False, "max_concurrent": 2},
     "llm_provider_1": {
         "name": "",
@@ -333,6 +349,8 @@ def _config_to_dict(config: configparser.ConfigParser) -> Dict[str, Any]:
 
     # 合并默认配置和用户配置
     for section, default_options in DEFAULT_CONFIG.items():
+        if section == "telegram_cloud" and section not in config:
+            continue  # 旧版使用上传通知的凭据和开关作为兼容默认值。
         config_dict[section] = default_options.copy()
 
         # 如果配置中有该节

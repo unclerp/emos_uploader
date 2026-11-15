@@ -25,6 +25,8 @@ from .base import (
     list_provider_names,
 )
 
+from ..telegram_config import cloud_config
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -140,7 +142,7 @@ class RecycleCleaner:
         self.section = section
 
         self.enabled = bool(section.get("enabled", False))
-        self.notify_telegram = bool(section.get("notify_telegram", True))
+        self.notify_telegram = cloud_config(config)["notify_recycle"]
         self.catch_up_on_start = bool(section.get("catch_up_on_start", True))
         self.run_on_start = bool(section.get("run_on_start", False))
         try:
@@ -163,7 +165,7 @@ class RecycleCleaner:
         self.telegram_config = (
             telegram_config
             if telegram_config is not None
-            else config.get("telegram", {})
+            else cloud_config(config)
         )
         self._provider_factory = provider_factory or (
             lambda name: create_provider(name, self._config)
@@ -223,7 +225,7 @@ class RecycleCleaner:
         section = config.get("recycle_clean", {}) or {}
         self.section = section
         self.enabled = bool(section.get("enabled", False))
-        self.notify_telegram = bool(section.get("notify_telegram", True))
+        self.notify_telegram = cloud_config(config)["notify_recycle"]
         self.catch_up_on_start = bool(section.get("catch_up_on_start", True))
         self.run_on_start = bool(section.get("run_on_start", False))
         try:
@@ -240,7 +242,7 @@ class RecycleCleaner:
             section.get("daily_at", DEFAULT_DAILY_AT) or DEFAULT_DAILY_AT
         )
         self.slots = parse_time_slots(self.daily_at)
-        self.telegram_config = config.get("telegram", {}) or {}
+        self.telegram_config = cloud_config(config)
 
         fingerprint = self._credentials_fingerprint(config)
         if fingerprint != self._config_fp:
@@ -571,7 +573,7 @@ class RecycleCleaner:
             config,
             "recycle:" + digest(str(datetime.now().timestamp()) + text),
             text,
-            event="post_upload",
+            event="recycle",
         )
 
 

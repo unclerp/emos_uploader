@@ -1,7 +1,7 @@
 import datetime
 from typing import Optional
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, Float
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, Float, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -226,6 +226,16 @@ class TelegramDelivery(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.now
     )
+
+
+class SeekSnapshot(Base):
+    """仅保存最近一轮完整的未认领求片列表。"""
+
+    __tablename__ = "seek_snapshot"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(64))
+    items: Mapped[list] = mapped_column(JSON)
+    checked_at: Mapped[datetime.datetime] = mapped_column(DateTime)
 
 
 class TelegramQueueRun(Base):
