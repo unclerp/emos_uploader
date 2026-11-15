@@ -3,6 +3,61 @@ function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
+function renderFieldHelp(id, label, description) {
+    if (!description) return '';
+    const helpId = escapeHtml(id) + '-help';
+    return `<span class="field-help">
+        <button type="button" class="field-help-button" aria-label="${escapeHtml(label)}的说明" aria-describedby="${helpId}">?</button>
+        <span id="${helpId}" class="field-help-tooltip" role="tooltip" popover="auto">${escapeHtml(description)}</span>
+    </span>`;
+}
+
+function showFieldHelp(button, tooltip) {
+    if (typeof tooltip.showPopover !== 'function') {
+        button.title = tooltip.textContent;
+        return;
+    }
+    if (tooltip.matches(':popover-open')) return;
+    tooltip.showPopover();
+    const anchor = button.getBoundingClientRect();
+    const { width, height } = tooltip.getBoundingClientRect();
+    const margin = 8;
+    const maxLeft = document.documentElement.clientWidth - width - margin;
+    const below = anchor.bottom + height <= window.innerHeight - margin;
+    tooltip.style.left = `${Math.max(margin, Math.min(anchor.left, maxLeft))}px`;
+    tooltip.style.top = `${below ? anchor.bottom : Math.max(margin, anchor.top - height)}px`;
+}
+
+function bindFieldHelp() {
+    // 使用事件委托，让重新渲染的配置、规则列表和弹窗复用同一套交互。
+    const helpButton = '.field-help-button';
+    const open = event => {
+        const button = event.target.closest?.(helpButton);
+        if (!button || (event.pointerType === 'touch' && event.type === 'pointerover')) return;
+        const tooltip = document.getElementById(button.getAttribute('aria-describedby'));
+        if (tooltip) showFieldHelp(button, tooltip);
+    };
+    const close = event => {
+        const help = event.target.closest?.('.field-help');
+        if (!help || help.contains(event.relatedTarget) || event.pointerType === 'touch') return;
+        const button = help.querySelector(helpButton);
+        if (event.type === 'pointerout' && button.matches(':focus-visible')) return;
+        if (event.type === 'focusout' && help.matches(':hover')) return;
+        const tooltip = help.querySelector('.field-help-tooltip');
+        if (typeof tooltip.hidePopover === 'function' && tooltip.matches(':popover-open')) tooltip.hidePopover();
+    };
+    for (const event of ['pointerover', 'focusin', 'click']) document.addEventListener(event, open);
+    for (const event of ['pointerout', 'focusout']) document.addEventListener(event, close);
+}
+
+function dismissFieldHelp() {
+    if (!window.HTMLElement?.prototype.showPopover) return false;
+    const tooltip = document.querySelector('.field-help-tooltip:popover-open');
+    if (!tooltip) return false;
+    tooltip.hidePopover();
+    return true;
+}
+
 function formatSize(bytes) {
     if (!bytes || bytes === 0) return '0 B';
     const k = 1024;

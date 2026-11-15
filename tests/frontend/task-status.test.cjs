@@ -11,8 +11,6 @@ function page(items) {
         window: {}, console, URLSearchParams,
         localStorage: { getItem: () => 'test', removeItem() {} },
         document: { addEventListener() {}, getElementById: () => null },
-        escapeHtml: value => String(value), formatSize: value => String(value),
-        showToast() {}, showModal() {},
         setTimeout: callback => timers.push(callback),
         async fetch(url, options = {}) {
             requests.push(url);
@@ -23,9 +21,10 @@ function page(items) {
     };
     vm.createContext(sandbox);
     const root = path.resolve(__dirname, '../../src/video_organizer/web/static');
-    for (const script of ['api.js', 'app.js']) {
+    for (const script of ['api.js', 'ui.js', 'rules.js', 'app.js']) {
         vm.runInContext(fs.readFileSync(path.join(root, script), 'utf8'), sandbox);
     }
+    Object.assign(sandbox, { showToast() {}, showModal() {} });
     vm.runInContext(`
         el.recentActivity = {}; el.taskList = {}; el.uploadProgressList = {};
         el.clearFailedBtn = {style:{}}; el.retryAllBtn = {style:{}};
@@ -107,6 +106,8 @@ for (const [action,legacy,expected] of [['',true,'delete'],['',false,'keep'],['k
         assert.match(html, /保留原文件/);
         assert.match(html, /通过 qB 移动/);
         assert.match(html, /删除任务及文件/);
+        assert.match(html, /aria-describedby="cfg-processing-post_upload_action-help"/);
+        assert.doesNotMatch(html, /<small>/);
         assert.equal(p.run("configEntries('processing').some(([k])=>k==='delete_after_upload')"), false);
     });
 }
@@ -118,11 +119,44 @@ test('Telegram 页面显示独立通知开关和明确的额外频道说明', ()
         assert.ok(html.includes(label));
         assert.ok(html.includes(`name="telegram.${key}"`));
     }
-    assert.match(p.run("renderConfigField('telegram','channel_chat_id','')"),/留空不推送额外频道/);
+    for (const [key, description] of [
+        ['enabled', '需同时填写 Bot Token'],
+        ['thread_id', '仅群组话题需要填写'],
+        ['channel_chat_id', '留空不推送额外频道'],
+        ['compact_mode', '总览保持 5 秒刷新'],
+        ['notify_queue', '每轮独立总览'],
+        ['auto_pin_queue', '置顶新一轮总览后'],
+    ]) {
+        const html = p.run(`renderConfigField('telegram',${JSON.stringify(key)},'')`);
+        const helpId = `cfg-telegram-${key}-help`;
+        assert.ok(html.includes(`aria-describedby="${helpId}">?</button>`));
+        assert.ok(html.includes(`id="${helpId}" class="field-help-tooltip" role="tooltip" popover="auto">${description}`));
+        assert.ok(!html.includes('<small>'));
+    }
 });
 
 test('Telegram Token 字段保持密码输入，话题 ID 可留空', () => {
     const p=page([]);
     assert.match(p.run("renderConfigField('telegram','bot_token','')"),/type="password"/);
     assert.match(p.run("renderConfigField('telegram','thread_id','')"),/普通聊天、群组或频道请留空/);
+});
+
+test('手动规则切换编辑模式后，填法说明仍关联当前字段', () => {
+    const p = page([]);
+    const list = p.run(`
+        const host = {
+            querySelector(selector) { return selector === '[data-rule-warnings]' ? {} : {checked: true}; },
+            querySelectorAll() { return []; },
+        };
+        ManualRulesEditor.render(host, {enabled: true});
+        host.innerHTML;
+    `);
+    assert.match(list, /aria-describedby="manual-rule-keyword-help"/);
+    assert.doesNotMatch(list, /placeholder="留空匹配全部文件"/);
+    const text = p.run(`
+        host.onclick({target: {closest: () => ({dataset: {action: 'mode'}})}});
+        host.innerHTML;
+    `);
+    assert.match(text, /aria-describedby="manual-rules-text-help"/);
+    assert.match(text, /popover="auto">每行一条规则/);
 });

@@ -24,6 +24,7 @@ const state = {
 const el = {};
 
 document.addEventListener('DOMContentLoaded', async () => {
+    bindFieldHelp();
     initThemeOnLoginPage();
     bindLoginEvents();
     const authed = await checkAuthApi();
@@ -250,7 +251,10 @@ function bindEvents() {
 
 function initKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') hideModal();
+        if (e.key === 'Escape') {
+            if (dismissFieldHelp()) e.preventDefault();
+            else hideModal();
+        }
         if ((e.ctrlKey || e.metaKey) && e.key === 'r' && document.querySelector('#page-tasks.active')) {
             e.preventDefault();
             loadTasks();
@@ -664,7 +668,13 @@ function renderIniConfigEditor(section) {
 
     let html = `<div class="config-section"><div class="config-section-title">${getSectionLabel(section)}</div><div class="config-grid">`;
     if (section === 'release_group_mapping') {
-        html += `<div class="config-field"><div class="config-field-label">字幕组映射（JSON 对象）</div><textarea name="release_group_mapping.__entries" rows="12" spellcheck="false">${escapeHtml(JSON.stringify(config[section], null, 2))}</textarea><small>可添加或删除字幕组，类型为 anime、drama 或 movie。</small></div>`;
+        html += `<div class="config-field">
+            <div class="config-field-label">
+                <label for="cfg-release-group-mapping">字幕组映射（JSON 对象）</label>
+                ${renderFieldHelp('cfg-release-group-mapping', '字幕组映射', '可添加或删除字幕组，类型为 anime、drama 或 movie。')}
+            </div>
+            <textarea id="cfg-release-group-mapping" name="release_group_mapping.__entries" rows="12" spellcheck="false">${escapeHtml(JSON.stringify(config[section], null, 2))}</textarea>
+        </div>`;
     } else {
         for (const [k, v] of configEntries(section)) {
             html += renderConfigField(section, k, v);
@@ -706,14 +716,18 @@ function renderConfigField(section, key, value) {
     const inputName = `${section}.${key}`;
     const isSecret = ['password','token','secret','api_key','apikey'].some(s => key.toLowerCase().includes(s));
 
-    let inputHtml;
+    let inputHtml, label = key, help;
     if (section === 'processing' && key === 'post_upload_action') {
         const action = value || (state.config.processing.delete_after_upload ? 'delete' : 'keep');
+        label = '上传后操作';
+        help = '新接收的 qB 任务使用此设置；同种子全部已选视频上传完成（含重复跳过）后才操作。目录监控和手动处理不执行 qB 移动。';
         inputHtml = `<select class="form-select" id="${inputId}" name="${inputName}">
             ${[['keep','保留原文件'],['move','通过 qB 移动'],['delete','删除任务及文件']].map(([v,label]) => `<option value="${v}" ${action === v ? 'selected' : ''}>${label}</option>`).join('')}
-        </select><small>新接收的 qB 任务使用此设置；同种子全部已选视频上传完成（含重复跳过）后才操作。目录监控和手动处理不执行 qB 移动。</small>`;
+        </select>`;
     } else if (section === 'processing' && key === 'post_upload_move_path') {
-        inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" autocomplete="off" spellcheck="false"><small>仅“通过 qB 移动”时必填。填写 qB 可访问的绝对目录，不是上传容器的路径。qB 移动会改为手动管理，保留当前做种或暂停状态。</small>`;
+        label = 'qB 移动目标目录';
+        help = '仅“通过 qB 移动”时必填。填写 qB 可访问的绝对目录，不是上传容器的路径。qB 移动会改为手动管理，保留当前做种或暂停状态。';
+        inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" autocomplete="off" spellcheck="false">`;
     } else if (typeof value === 'boolean') {
         inputHtml = `<div class="toggle-wrap">
             <div class="toggle-track ${value ? 'on' : ''}" data-for="${inputId}">
@@ -724,7 +738,8 @@ function renderConfigField(section, key, value) {
         </div>`;
     } else if (section === 'manual_rules' && key === 'rules') {
         const rules = value.map(r => typeof r === 'string' ? r : r.rule).filter(Boolean);
-        inputHtml = `<textarea id="${inputId}" name="${inputName}" rows="8" spellcheck="false">${escapeHtml(rules.join('\n'))}</textarea><small>每行一条规则，由手动规则总开关控制启用。</small>`;
+        help = '每行一条规则，由手动规则总开关控制启用。';
+        inputHtml = `<textarea id="${inputId}" name="${inputName}" rows="8" spellcheck="false">${escapeHtml(rules.join('\n'))}</textarea>`;
     } else if (Array.isArray(value)) {
         inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(value.join(', '))}">`;
     } else if (typeof value === 'object' && value !== null) {
@@ -737,9 +752,16 @@ function renderConfigField(section, key, value) {
 
     const telegramLabels = {enabled:'启用 Telegram 通知',bot_token:'Bot Token',chat_id:'接收通知的 Chat ID',thread_id:'群组话题 ID',channel_chat_id:'额外推送频道（可选）',compact_mode:'批量简洁模式',queue_idle_seconds:'本轮结束空闲等待（秒）',failure_window_seconds:'失败合并窗口（秒）',notify_queue:'队列总览',auto_pin_queue:'自动置顶队列总览',notify_progress:'上传进度',notify_success:'上传成功及重试解决',notify_failure:'上传或识别失败',notify_skipped:'重复资源跳过',notify_post_upload:'上传后移动／删除及清理结果'};
     const telegramHelp = {compact_mode:'总览保持 5 秒刷新并显示单文件进度；普通成功、跳过和移动成功不另发。失败合并提醒，操作失败独立提醒。关闭恢复详细模式；关闭队列总览时自动使用详细模式。',notify_queue:'每轮独立总览，统计成功、跳过、失败、处理中和等待；结束后另发简短总结。',auto_pin_queue:'置顶新一轮总览后，仅取消上一轮总览的置顶。群组或频道需授予 Bot 对应的置顶权限。',thread_id:'仅群组话题需要填写；普通聊天、群组或频道请留空。',channel_chat_id:'留空不推送额外频道。填写后才发送网盘链接或秒传信息，请确认目标频道。',enabled:'需同时填写 Bot Token 和接收通知的 Chat ID；通知在后台发送。'};
-    if (section === 'telegram' && telegramHelp[key]) inputHtml += `<small>${telegramHelp[key]}</small>`;
+    if (section === 'telegram') {
+        label = telegramLabels[key] || key;
+        help = telegramHelp[key];
+    }
     return `<div class="config-field">
-        <div class="config-field-label">${escapeHtml(section === 'telegram' ? (telegramLabels[key] || key) : section === 'processing' && key === 'post_upload_action' ? '上传后操作' : section === 'processing' && key === 'post_upload_move_path' ? 'qB 移动目标目录' : key)} <code>${section}.${key}</code></div>
+        <div class="config-field-label">
+            ${typeof value === 'boolean' ? `<span>${escapeHtml(label)}</span>` : `<label for="${inputId}">${escapeHtml(label)}</label>`}
+            ${renderFieldHelp(inputId, label, help)}
+            <code>${inputName}</code>
+        </div>
         ${inputHtml}
     </div>`;
 }
@@ -753,9 +775,11 @@ function renderLlmProviders() {
         html += `<div class="config-empty"><span class="empty-icon">⌀</span><span>暂无提供商</span></div>`;
     } else {
         html += `<div class="config-table-wrap"><table class="config-table">
-            <thead><tr><th class="col-name">名称</th><th class="col-url">API URL</th><th class="col-key">API Key</th><th class="col-model">模型</th><th class="col-num">权重</th><th class="col-num">超时</th><th class="col-check">启用</th><th class="col-actions">操作</th></tr></thead><tbody>`;
+            <thead><tr><th class="col-name">名称</th><th class="col-url">API URL</th>
+                <th class="col-key">API Key ${renderFieldHelp('lp-api-key', 'API Key', '已设置时，留空会保留现有 API Key。')}</th>
+                <th class="col-model">模型</th><th class="col-num">权重</th><th class="col-num">超时</th><th class="col-check">启用</th><th class="col-actions">操作</th></tr></thead><tbody>`;
         providers.forEach(p => {
-            const keyPlaceholder = p.has_key ? '已设置，留空不变' : '未设置';
+            const keyPlaceholder = p.has_key ? '已设置' : '未设置';
             html += `<tr>
                 <td><input class="lp-name" data-id="${p.id}" value="${escapeHtml(p.name)}" style="width:85px"></td>
                 <td><input class="lp-url" data-id="${p.id}" value="${escapeHtml(p.api_url)}" style="font-family:monospace"></td>
@@ -1381,7 +1405,10 @@ function editDownloaderConfig(data) {
                 <input type="password" id="dlPass" class="form-input" value="${escapeHtml(data.password||'')}" placeholder="">
             </div>
             <div class="form-group">
-                <label class="form-label">RPC URL（可选，留空自动拼接）</label>
+                <div class="form-label form-label-row">
+                    <label for="dlRpcUrl">RPC URL（可选）</label>
+                    ${renderFieldHelp('dlRpcUrl', 'RPC URL', '留空时，根据下载器类型、主机地址和端口自动拼接。')}
+                </div>
                 <input type="text" id="dlRpcUrl" class="form-input" value="${escapeHtml(data.rpc_url||'')}" placeholder="">
             </div>
         </form>
@@ -1732,8 +1759,11 @@ async function editUser(userId) {
                 <input type="text" id="ufUsername" class="form-input" value="${escapeHtml(u.username)}" autocomplete="off">
             </div>
             <div class="form-group">
-                <label class="form-label">密码（留空不修改）</label>
-                <input type="password" id="ufPassword" class="form-input" placeholder="留空则保持原密码" autocomplete="new-password">
+                <div class="form-label form-label-row">
+                    <label for="ufPassword">密码</label>
+                    ${renderFieldHelp('ufPassword', '密码', '留空则保持原密码。')}
+                </div>
+                <input type="password" id="ufPassword" class="form-input" autocomplete="new-password">
             </div>
             <div class="form-group">
                 <label class="form-label">角色</label>
@@ -1815,8 +1845,11 @@ function showAddApiKeyModal() {
     el.modalBody.innerHTML = `
         <form id="apiKeyForm" onsubmit="return false">
             <div class="form-group">
-                <label class="form-label">名称</label>
-                <input type="text" id="akName" class="form-input" placeholder="用于备注，如：emya 入库、脚本调用">
+                <div class="form-label form-label-row">
+                    <label for="akName">名称</label>
+                    ${renderFieldHelp('akName', 'API Key 名称', '用于备注，例如 emya 入库、脚本调用。')}
+                </div>
+                <input type="text" id="akName" class="form-input">
             </div>
             <div class="form-group" style="color:var(--text-muted);font-size:0.8125rem">
                 创建后将只展示一次明文 Key，请立即复制保存。
@@ -1905,8 +1938,8 @@ function switchOrganizeProvider(provider) {
     const saved = state.organizeIdsByProvider[provider] || { sourceId: '', targetId: '' };
     el.organizeSourceInput.value = saved.sourceId;
     el.organizeTargetInput.value = saved.targetId;
-    el.organizeSourceInput.placeholder = '默认使用配置中的 organize_source_id';
-    el.organizeTargetInput.placeholder = '默认使用配置中的 organize_target_id';
+    el.organizeSourceInput.placeholder = '';
+    el.organizeTargetInput.placeholder = '';
     el.organizeAvailableBadge.textContent = '未配置';
     el.organizeAvailableBadge.className = 'badge';
     loadOrganizeStatus();
@@ -1928,8 +1961,8 @@ async function loadOrganizeStatus() {
         const s = await loadOrganizeStatusFromApi(state.organizeProvider);
         el.organizeAvailableBadge.textContent = s.available ? '可用' : '未配置';
         el.organizeAvailableBadge.className = s.available ? 'badge badge-success' : 'badge badge-warning';
-        el.organizeSourceInput.placeholder = s.organize_source_id ? `默认: ${s.organize_source_id}` : '默认使用配置中的 organize_source_id';
-        el.organizeTargetInput.placeholder = s.organize_target_id ? `默认: ${s.organize_target_id}` : '默认使用配置中的 organize_target_id';
+        el.organizeSourceInput.placeholder = s.organize_source_id ? `默认: ${s.organize_source_id}` : '';
+        el.organizeTargetInput.placeholder = s.organize_target_id ? `默认: ${s.organize_target_id}` : '';
         const running = !!s.running;
         el.organizeStartBtn.disabled = running;
         el.organizePreviewBtn.disabled = running;

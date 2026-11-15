@@ -15,9 +15,6 @@ function page({ saveError = null, applied = true, deleteApplied = true } = {}) {
     const sandbox = {
         window: {}, console, localStorage: { getItem: () => 'test-token', removeItem() {} },
         document: { addEventListener() {}, getElementById: id => fields[id] },
-        escapeHtml: value => String(value),
-        showModal() {}, hideModal() { sandbox.closed = true; },
-        showToast(message, kind) { toasts.push({ message, kind }); },
         closed: false,
         async fetch(url, options = {}) {
             const method = options.method || 'GET';
@@ -51,8 +48,13 @@ function page({ saveError = null, applied = true, deleteApplied = true } = {}) {
     };
     vm.createContext(sandbox);
     const root = path.resolve(__dirname, '../../src/video_organizer/web/static');
-    vm.runInContext(fs.readFileSync(path.join(root, 'api.js'), 'utf8'), sandbox);
-    vm.runInContext(fs.readFileSync(path.join(root, 'app.js'), 'utf8'), sandbox);
+    for (const script of ['api.js', 'ui.js', 'app.js']) {
+        vm.runInContext(fs.readFileSync(path.join(root, script), 'utf8'), sandbox);
+    }
+    Object.assign(sandbox, {
+        showModal() {}, hideModal() { sandbox.closed = true; },
+        showToast(message, kind) { toasts.push({ message, kind }); },
+    });
     vm.runInContext(`
         el.modalTitle = {};
         el.modalBody = {};
@@ -69,6 +71,7 @@ for (const kind of ['qbittorrent', 'aria2']) {
     test(`新增 ${kind} 只保存新配置，不删除空旧节`, async () => {
         const p = page();
         p.sandbox.showAddDownloaderModal();
+        assert.match(vm.runInContext('el.modalBody.innerHTML', p.sandbox), /aria-describedby="dlRpcUrl-help"/);
         p.fields.dlType.value = kind;
         await p.submit();
         assert.deepEqual(p.requests.map(r => [r.method, r.url]), [

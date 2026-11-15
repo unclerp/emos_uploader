@@ -49,19 +49,26 @@ const ManualRulesEditor = (() => {
     function rowHtml(row, i) {
         const input = (field, value, label, extra = '') => `<input class="form-input" data-field="${field}" value="${escape(value)}" aria-label="第 ${i+1} 条${label}" autocomplete="off" ${extra}>`;
         const fields = row.kind === 'tmdb' ?
-            `<td>${input('keyword',row.keyword,'匹配关键词','placeholder="留空匹配全部文件"')}</td><td>${input('id',row.id,'TMDB 编号','type="number" min="1" step="1"')}</td><td><select class="form-select" data-field="type" aria-label="第 ${i+1} 条类型"><option value="tv" ${row.type==='tv'?'selected':''}>电视剧</option><option value="movie" ${row.type==='movie'?'selected':''}>电影</option></select></td>` :
+            `<td>${input('keyword',row.keyword,'匹配关键词')}</td><td>${input('id',row.id,'TMDB 编号','type="number" min="1" step="1"')}</td><td><select class="form-select" data-field="type" aria-label="第 ${i+1} 条类型"><option value="tv" ${row.type==='tv'?'selected':''}>电视剧</option><option value="movie" ${row.type==='movie'?'selected':''}>电影</option></select></td>` :
             `<td colspan="3"><label>高级规则（保留原文）<textarea class="form-input" data-field="rule" aria-label="第 ${i+1} 条高级规则" rows="2" spellcheck="false">${escape(row.rule)}</textarea></label></td>`;
         return `<tr data-rule-index="${i}"><td>${i+1}</td>${fields}<td><input type="checkbox" data-field="enabled" aria-label="第 ${i+1} 条启用" ${row.enabled?'checked':''}></td><td><div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn btn-sm btn-secondary" data-action="up" data-index="${i}" ${i===0?'disabled':''} aria-label="上移第 ${i+1} 条">↑</button><button type="button" class="btn btn-sm btn-secondary" data-action="down" data-index="${i}" ${i===rows.length-1?'disabled':''} aria-label="下移第 ${i+1} 条">↓</button><button type="button" class="btn btn-sm btn-secondary" data-action="delete" data-index="${i}" aria-label="删除第 ${i+1} 条">删除</button></div></td></tr>`;
     }
     function paint() {
         const text = mode === 'text' ? rows.map(compile).map(row => (row.enabled ? '' : disabledPrefix) + row.rule).join('\n') : '';
-        host.innerHTML = `<div class="config-section"><div class="config-section-title">手动规则</div>
+        host.innerHTML = `<div class="config-section"><div class="config-section-title">手动规则
+            ${renderFieldHelp('manual-rule-order', '手动规则', '按从上到下执行，后面的规则可以覆盖前面的结果。编辑完成后点击右上角“保存配置”。')}
+            </div>
             <div style="display:flex;gap:24px;flex-wrap:wrap;margin:16px 0"><label><input type="checkbox" data-flag="enabled" ${flags.enabled?'checked':''}> 启用手动规则</label><label><input type="checkbox" data-flag="normalize_symbols" ${flags.normalize_symbols?'checked':''}> 规范化符号</label></div>
             <div style="display:flex;gap:12px;margin:16px 0">${mode==='list'?'<button type="button" class="btn btn-secondary" data-action="add">新增规则</button>':''}<button type="button" class="btn btn-secondary" data-action="mode">${mode==='list'?'高级文本模式':'列表模式'}</button></div>
-            <p style="color:var(--text-muted)">按从上到下执行，后面的规则可以覆盖前面的结果。编辑完成后点击右上角“保存配置”。</p>
             <p role="status" data-rule-warnings style="color:var(--accent-warning,#e6a23c)"></p>
-            ${mode==='text'?`<textarea class="form-input" data-rules-text rows="12" spellcheck="false" aria-label="高级规则文本">${escape(text)}</textarea><p style="color:var(--text-muted)">每行一条规则；停用规则以 ${disabledPrefix} 开头。</p>`:
-                `<div class="config-table-wrap"><table class="config-table" style="min-width:720px"><thead><tr><th>#</th><th>匹配关键词</th><th>TMDB 编号</th><th>类型</th><th>启用</th><th>操作</th></tr></thead><tbody>${rows.map(rowHtml).join('')}</tbody></table></div>${rows.length?'':'<p>暂无规则，点击“新增规则”开始添加。</p>'}`}
+            ${mode==='text'?`<div class="form-label form-label-row">
+                <label for="manual-rules-text">高级规则文本</label>
+                ${renderFieldHelp('manual-rules-text', '高级规则文本', `每行一条规则；停用规则以 ${disabledPrefix.trimEnd()} 开头。`)}
+                </div>
+                <textarea id="manual-rules-text" class="form-input" data-rules-text rows="12" spellcheck="false">${escape(text)}</textarea>`:
+                `<div class="config-table-wrap"><table class="config-table" style="min-width:720px">
+                <thead><tr><th>#</th><th>匹配关键词 ${renderFieldHelp('manual-rule-keyword', '匹配关键词', '留空时匹配全部文件。')}</th><th>TMDB 编号</th><th>类型</th><th>启用</th><th>操作</th></tr></thead>
+                <tbody>${rows.map(rowHtml).join('')}</tbody></table></div>${rows.length?'':'<p>暂无规则，点击“新增规则”开始添加。</p>'}`}
             </div>`;
         conflicts();
     }

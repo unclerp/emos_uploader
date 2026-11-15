@@ -153,6 +153,9 @@
 - 绝对导入: `from src.video_organizer.core.renamer import VideoRenamer`
 - 异常用 `try/except` + 日志 `logger = logging.getLogger(__name__)`
 - 文档和注释使用中文
+- Web 表单的参数说明放在字段标签旁的 `?` 中。动态模板使用 `ui.js` 的
+  `renderFieldHelp()`，静态页面沿用同一组件的 HTML 结构。填写规则、留空行为和格式说明
+  都放入浮层，字段名称、当前状态和校验反馈保持可见。
 - ⚠️ 控制台输出中文在 Windows 下易乱码，脚本内读文件显式 `encoding="utf-8"`
 
 ## Docker

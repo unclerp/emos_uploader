@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Video Organizer 管理后台</title>
-    <link rel="stylesheet" href="/static/app.css?v=23f7e95da069">
+    <link rel="stylesheet" href="/static/app.css?v=9a3895abfd23">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2300d4ff'%3E%3Cpath d='M4 4h16a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2zm0 2v12h16V6H4zm2 2h4v4H6V8zm6 0h6v2h-6V8zm0 4h6v2h-6v-2zm-6 2h12v2H6v-2z'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -456,8 +456,14 @@
                     </div>
                     <div class="form-group" style="display:flex;gap:12px;flex-wrap:wrap">
                         <div>
-                            <label class="form-label" for="manualTmdbId">指定 TMDB 编号（可选）</label>
-                            <input type="number" min="1" step="1" class="form-input" id="manualTmdbId" autocomplete="off" placeholder="留空则自动识别">
+                            <div class="form-label form-label-row">
+                                <label for="manualTmdbId">指定 TMDB 编号（可选）</label>
+                                <span class="field-help">
+                                    <button type="button" class="field-help-button" aria-label="指定 TMDB 编号的说明" aria-describedby="manualTmdbId-help">?</button>
+                                    <span id="manualTmdbId-help" class="field-help-tooltip" role="tooltip" popover="auto">留空则自动识别。指定后用于预览、刮削验证和本次选中的全部文件；季号、集号仍从各文件解析。不同作品请分开处理。</span>
+                                </span>
+                            </div>
+                            <input type="number" min="1" step="1" class="form-input" id="manualTmdbId" autocomplete="off">
                         </div>
                         <div>
                             <label class="form-label" for="manualTmdbType">条目类型</label>
@@ -467,7 +473,6 @@
                                 <option value="tv">电视剧 / 动漫剧集</option>
                             </select>
                         </div>
-                        <small style="width:100%;color:var(--text-muted)">指定后用于预览、刮削验证和本次选中的全部文件；季号、集号仍从各文件解析。不同作品请分开处理。</small>
                     </div>
                     <div style="display:flex;gap:12px;margin-bottom:12px">
                         <button class="btn btn-secondary" id="addToFileListBtn">添加到列表</button>
@@ -489,10 +494,14 @@
                         </div>
                         <div style="margin-top:8px;font-size:13px;color:var(--text-muted)" id="fileListCount"></div>
                     </div>
-                    <div class="form-group" style="margin-top:12px">
+                    <div class="form-group form-label-row" style="margin-top:12px">
                         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                            <input type="checkbox" id="forceProcessCheck"> 强制处理（即使已在队列中）
+                            <input type="checkbox" id="forceProcessCheck"> 强制处理
                         </label>
+                        <span class="field-help">
+                            <button type="button" class="field-help-button" aria-label="强制处理的说明" aria-describedby="forceProcessCheck-help">?</button>
+                            <span id="forceProcessCheck-help" class="field-help-tooltip" role="tooltip" popover="auto">即使文件已在队列中，也提交处理。</span>
+                        </span>
                     </div>
                     <div style="display:flex;gap:12px;flex-wrap:wrap">
                         <button class="btn btn-primary" id="processSelectedBtn">处理选中的文件</button>
@@ -559,12 +568,24 @@
                         </div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">源目录ID</label>
-                        <input type="text" class="form-input" id="organizeSourceInput" placeholder="默认使用配置中的 organize_source_id">
+                        <div class="form-label form-label-row">
+                            <label for="organizeSourceInput">源目录ID</label>
+                            <span class="field-help">
+                                <button type="button" class="field-help-button" aria-label="源目录 ID 的说明" aria-describedby="organizeSourceInput-help">?</button>
+                                <span id="organizeSourceInput-help" class="field-help-tooltip" role="tooltip" popover="auto">留空时使用配置中的 organize_source_id。</span>
+                            </span>
+                        </div>
+                        <input type="text" class="form-input" id="organizeSourceInput">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">目标目录ID</label>
-                        <input type="text" class="form-input" id="organizeTargetInput" placeholder="默认使用配置中的 organize_target_id">
+                        <div class="form-label form-label-row">
+                            <label for="organizeTargetInput">目标目录ID</label>
+                            <span class="field-help">
+                                <button type="button" class="field-help-button" aria-label="目标目录 ID 的说明" aria-describedby="organizeTargetInput-help">?</button>
+                                <span id="organizeTargetInput-help" class="field-help-tooltip" role="tooltip" popover="auto">留空时使用配置中的 organize_target_id。</span>
+                            </span>
+                        </div>
+                        <input type="text" class="form-input" id="organizeTargetInput">
                     </div>
                     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px">
                         <button class="btn btn-secondary" id="organizeCountBtn">统计文件数</button>
@@ -671,8 +692,8 @@
     </div>
 
     <script src="/static/api.js?v=5bf2ebe2cec0"></script>
-    <script src="/static/ui.js?v=506cac969496"></script>
-    <script src="/static/rules.js?v=fa1ffc6368c2"></script>
-    <script src="/static/app.js?v=896aa9e055f9"></script>
+    <script src="/static/ui.js?v=c30b1b20de40"></script>
+    <script src="/static/rules.js?v=d1c9529d32bf"></script>
+    <script src="/static/app.js?v=4fe87c7357aa"></script>
 </body>
 </html>
