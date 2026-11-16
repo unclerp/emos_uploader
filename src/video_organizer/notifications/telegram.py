@@ -414,6 +414,10 @@ class TelegramDispatcher:
                 "text": snapshot["text"],
                 "link_preview_options": {"is_disabled": True},
             }
+            if snapshot["scope"].startswith("seek:formatted:"):
+                from .seek import message_entities
+
+                payload["entities"] = message_entities(snapshot["text"])
             if snapshot["thread_id"] and not snapshot["message_id"]:
                 payload["message_thread_id"] = int(snapshot["thread_id"])
             silent = snapshot["scope"].startswith(
@@ -438,7 +442,7 @@ class TelegramDispatcher:
                 )
                 data = response.json()
                 description = str(data.get("description", "")).lower()
-                # 已删除的消息只重发一次；格式使用纯文本，不做盲目的格式重试。
+                # 消息已删除时只重发一次，并复用原发送内容与格式。
                 if (
                     message_id
                     and response.status_code == 400

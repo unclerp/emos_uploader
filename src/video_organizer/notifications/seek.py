@@ -17,7 +17,11 @@ from .telegram import digest, enabled, install_log_redaction
 logger = logging.getLogger(__name__)
 BEIJING = timezone(timedelta(hours=8))
 HEADING = "🎬 EMOS 求片提醒"
-MARKERS = {"new": "🆕 ", "updated": "🔄 ", "existing": "   "}
+MARKERS = {"new": "🆕", "updated": "🔄", "existing": ""}
+FORMATTED_SCOPE = "seek:formatted:"
+_TITLE_DATE = re.compile(r" · \d{1,2} 月 \d{1,2} 日 \d{2}:\d{2}$")
+_TITLE_MARKS = re.compile(r"^(?:(?:🆕|🔄) )+")
+_EPISODE_LABEL = re.compile(r"(?<!\w)S\d+(?:E\d+(?:–S\d+E\d+)?)?(?!\w)")
 
 
 def _timestamp(item):
@@ -141,19 +145,24 @@ def render_pages(items, changes):
         works[(item.get("video_type"), key)].append(item)
     blocks = []
     for rows in works.values():
-        lines = [_title(rows[0])]
+        latest = _timestamp(rows[0]).astimezone(BEIJING)
+        date = f"{latest.month} 月 {latest.day} 日 {latest:%H:%M}"
+        title = f"{_title(rows[0])} · {date}"
         groups = defaultdict(list)
         for row in rows:
-            minute = (
-                _timestamp(row).astimezone(BEIJING).replace(second=0, microsecond=0)
-            )
-            groups[(minute, changes.get(row["id"], "existing"))].append(row)
-        for (minute, change), entries in groups.items():
+            groups[changes.get(row["id"], "existing")].append(row)
+        if rows[0].get("video_type") == "movie":
+            markers = " ".join(MARKERS[change] for change in groups if MARKERS[change])
+            blocks.append([f"{markers} {title}" if markers else title])
+            continue
+        lines = [title]
+        for change, entries in groups.items():
             episodes = _episode_labels(entries)
-            date = f"{minute.month} 月 {minute.day} 日 {minute:%H:%M}"
-            lines.append(
-                f"  {MARKERS[change]}{episodes + ' · ' if episodes else ''}{date}"
-            )
+            marker = MARKERS[change]
+            if episodes:
+                lines.append(f"{marker or '已有'} {episodes}")
+            elif marker:
+                lines.append(marker)
         blocks.append(lines)
 
     pages = [HEADING]
@@ -179,6 +188,40 @@ def render_pages(items, changes):
                     pages.append(f"{HEADING}（续）\n\n{title}")
                 pages[-1] += "\n" + segment
     return pages
+
+
+def message_entities(text):
+    """用 Telegram UTF-16 偏移标注样式，消息正文仍为普通文本。"""
+    entities = []
+    offset = 0
+    start_of_block = True
+
+    def add(kind, line, start, end):
+        if end > start:
+            entities.append(
+                {
+                    "type": kind,
+                    "offset": offset + len(line[:start].encode("utf-16-le")) // 2,
+                    "length": len(line[start:end].encode("utf-16-le")) // 2,
+                }
+            )
+
+    for line in text.split("\n"):
+        if line and start_of_block:
+            date = _TITLE_DATE.search(line) if offset else None
+            marks = _TITLE_MARKS.match(line) if offset else None
+            add(
+                "bold",
+                line,
+                marks.end() if marks else 0,
+                date.start() if date else len(line),
+            )
+        elif line:
+            for episode in _EPISODE_LABEL.finditer(line):
+                add("code", line, *episode.span())
+        start_of_block = not line
+        offset += len(line.encode("utf-16-le")) // 2 + 1
+    return entities
 
 
 class SeekMonitor:
@@ -254,7 +297,10 @@ class SeekMonitor:
                         round_id = uuid4().hex
                         for index, page in enumerate(render_pages(items, changes)):
                             if not self.dispatcher.stage(
-                                db, settings, f"seek:{round_id}:{index:06d}", page
+                                db,
+                                settings,
+                                f"{FORMATTED_SCOPE}{round_id}:{index:06d}",
+                                page,
                             ):
                                 raise RuntimeError("求片通知入队失败")
                 if snapshot is None:
@@ -321,6 +367,7 @@ def send_test(bot_token, chat_id, thread_id):
     """使用表单当前值验证求片 Bot，测试结果直接返回给网页。"""
     install_log_redaction()
     payload = {"chat_id": chat_id, "text": HEADING + "\n这是一条测试消息。"}
+    payload["entities"] = message_entities(payload["text"])
     if thread_id:
         payload["message_thread_id"] = int(thread_id)
     try:

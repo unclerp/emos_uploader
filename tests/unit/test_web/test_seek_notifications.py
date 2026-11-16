@@ -96,7 +96,7 @@ def test_full_pages_snapshot_silent_first_run_and_persistent_markers(
     dispatcher.configure_application({"telegram_seek": SEEK, "emos": EMOS})
     updated = row(2, "12:12:45", episode=8)
     movie = row(4, "12:08:00", title="电影", work=7, season=None)
-    new = [row(i + 10, "12:05:05", episode=i) for i in (1, 2, 3, 5)]
+    new = [row(i + 10, f"12:0{i}:05", episode=i) for i in (1, 2, 3, 5)]
     new.append(row(17, "12:05:05", season=3, episode=1))
     full = [older, original, unchanged]  # 模拟原列表再次返回
     listed = [updated, movie, *new, unchanged, older]
@@ -105,17 +105,50 @@ def test_full_pages_snapshot_silent_first_run_and_persistent_markers(
     assert snapshot_and_messages() == (
         listed,
         [
-            "🎬 EMOS 求片提醒\n\n三餐四季\n"
-            "  🔄 S02E08 · 11 月 15 日 20:12\n"
-            "  🆕 S02E01–S02E03、S02E05、S03E01 · 11 月 15 日 20:05\n"
-            "     S02E04 · 11 月 15 日 18:05\n\n"
-            "电影\n  🆕 11 月 15 日 20:08\n\n"
-            "完美世界\n     S00E02 · 11 月 15 日 19:30",
+            "🎬 EMOS 求片提醒\n\n三餐四季 · 11 月 15 日 20:12\n"
+            "🔄 S02E08\n"
+            "🆕 S02E01–S02E03、S02E05、S03E01\n"
+            "已有 S02E04\n\n"
+            "🆕 电影 · 11 月 15 日 20:08\n\n"
+            "完美世界 · 11 月 15 日 19:30\n"
+            "已有 S00E02",
         ],
     )
     dispatcher.seek.poll()
     assert len(snapshot_and_messages()[1]) == 1
     assert dispatcher.seek.status()["last_success_at"]
+
+    sender = Mock(
+        return_value=Mock(
+            status_code=200,
+            json=Mock(return_value={"ok": True, "result": {"message_id": 123}}),
+        )
+    )
+    monkeypatch.setattr(telegram.requests, "post", sender)
+    assert dispatcher.send_once()
+    payload = sender.call_args.kwargs["json"]
+    encoded = payload["text"].encode("utf-16-le")
+    extracted = [
+        (
+            entity["type"],
+            encoded[
+                2 * entity["offset"] : 2 * (entity["offset"] + entity["length"])
+            ].decode("utf-16-le"),
+        )
+        for entity in payload["entities"]
+    ]
+    assert extracted == [
+        ("bold", "🎬 EMOS 求片提醒"),
+        ("bold", "三餐四季"),
+        ("code", "S02E08"),
+        ("code", "S02E01–S02E03"),
+        ("code", "S02E05"),
+        ("code", "S03E01"),
+        ("code", "S02E04"),
+        ("bold", "电影"),
+        ("bold", "完美世界"),
+        ("code", "S00E02"),
+    ]
 
 
 def test_failed_page_and_outbox_failure_keep_prior_snapshot(dispatcher, monkeypatch):
@@ -220,7 +253,10 @@ def test_long_digest_preserves_order_and_all_titles():
     assert len(pages) > 1
     assert all(len(p.encode("utf-16-le")) <= 7800 for p in pages)
     assert [
-        line for page in pages for line in page.splitlines() if line.startswith("片名")
+        line.removeprefix("🆕 ").removesuffix(" · 11 月 15 日 20:00")
+        for page in pages
+        for line in page.splitlines()
+        if "片名" in line
     ] == [item["video_title"] for item in items]
 
 
