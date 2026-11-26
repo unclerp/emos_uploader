@@ -18,7 +18,8 @@ from ...upload.emos_uploader import RobustEmosVideoUploader
 from ..renamer import VideoRenamer
 from ..renamer.path_builder import resolve_season_episode
 from ..tmdb_client import TMDBClient
-from ..subtitle_handler import SubtitleHandler
+from ..subtitle_handler import SubtitleHandler, is_hls_segment_subtitle
+from ..hash_washer import HashWasher
 from ..downloader import decode_file_path
 from ...utils.logging_utils import (
     get_logger,
@@ -390,6 +391,20 @@ class VideoFileHandler:
         except Exception as e:
             log_exception(self.logger, "初始化字幕处理器失败")
             self.subtitle_handler = None
+
+        # 初始化洗码器（改动文件哈希以绕过网盘秒传/去重，默认关闭）
+        hash_wash_config = (config or {}).get("hash_wash") or {}
+        try:
+            self.hash_washer = HashWasher(hash_wash_config)
+            if self.hash_washer.enabled:
+                self.logger.info(
+                    f"洗码功能已启用: mode={self.hash_washer.mode}, "
+                    f"bytes={self.hash_washer.min_bytes}-{self.hash_washer.max_bytes}, "
+                    f"temp_dir={self.hash_washer.temp_dir}"
+                )
+        except Exception as e:
+            log_exception(self.logger, "初始化洗码器失败，本次运行不做洗码")
+            self.hash_washer = HashWasher({})
 
         # 初始化 emya 数据库入库功能
         self.emya_db_config = emya_db_config or {}
@@ -1480,6 +1495,18 @@ class VideoFileHandler:
         # 根据配置决定上传到哪些云盘
         upload_results = {}
 
+        # 洗码：上传前改动文件内容使哈希变化，绕过网盘秒传/去重
+        # copy 模式会生成临时副本（原文件不动），上传结束后由 finally 清理
+        wash_result = None
+        upload_path = file_path
+        if getattr(self, "hash_washer", None) is not None:
+            wash_result = self.hash_washer.wash(file_path)
+            upload_path = wash_result.upload_path
+            if wash_result.washed:
+                console_log(f"🔀 [线程#{worker_id}] 洗码: {wash_result.message}")
+            elif wash_result.message:
+                console_log(f"🔀 [线程#{worker_id}] 洗码跳过: {wash_result.message}")
+
         try:
             # 1. 上传到 Emos
             if "emos" in self.upload_targets:
@@ -1514,7 +1541,7 @@ class VideoFileHandler:
                         )
 
                         upload_results["emos"] = uploader.upload_video(
-                            file_path,
+                            upload_path,
                             matched_item_type,
                             str(matched_item_id),
                             self.emos_file_storage,
@@ -1597,13 +1624,14 @@ class VideoFileHandler:
                             folder_structure = None
 
                         upload_results["p123"] = uploader.upload_video(
-                            file_path,
+                            upload_path,
                             media_type,
                             str(matched_item_id),
                             None,
                             media_info,
                             rename_to=target_filename,
                             folder_structure=folder_structure,
+                            subtitle_scan_path=file_path,
                         )
 
                         if upload_results["p123"]:
@@ -1652,7 +1680,7 @@ class VideoFileHandler:
 
                         upload_results["cloud189"] = (
                             self.cloud189_uploader.upload_video(
-                                file_path,
+                                upload_path,
                                 show_name=show_name,
                                 season=season,
                                 episode=episode,
@@ -1778,13 +1806,14 @@ class VideoFileHandler:
                             folder_structure = None
 
                         upload_results["yun139"] = self.yun139_uploader.upload_video(
-                            file_path,
+                            upload_path,
                             media_type,
                             str(matched_item_id),
                             None,
                             media_info,
                             rename_to=target_filename,
                             folder_structure=folder_structure,
+                            subtitle_scan_path=file_path,
                         )
 
                         if upload_results["yun139"]:
@@ -1893,9 +1922,11 @@ class VideoFileHandler:
                                     folder_parts=folder_parts,
                                     media_url=str(media_url),
                                     quality_tags=metadata.get("quality_tags"),
+                                    # 洗码后云端文件大小与本地原文件不同（尾部多了随机字节），
+                                    # 入库用实际上传那份的大小
                                     file_size=(
-                                        os.path.getsize(file_path)
-                                        if os.path.exists(file_path)
+                                        os.path.getsize(upload_path)
+                                        if os.path.exists(upload_path)
                                         else None
                                     ),
                                     season=metadata.get("season"),
@@ -2062,6 +2093,10 @@ class VideoFileHandler:
                     "error": str(e),
                 },
             )
+        finally:
+            # 清理洗码产生的临时副本（成功/失败/异常都要清，否则会占满磁盘）
+            if wash_result is not None:
+                self.hash_washer.cleanup(wash_result)
 
     def force_process_file(
         self,
@@ -2368,6 +2403,16 @@ class VideoFileHandler:
         """
         if not self.subtitle_handler:
             self.logger.warning("字幕处理器未初始化，跳过字幕文件处理")
+            return False
+
+        if not subtitle_path:
+            return False
+
+        # HLS/DASH 分片（playlistN.vtt 等）不是字幕，不得当成视频字幕改名，
+        # 否则会把一个几百字节的分片命名成 <视频名>.srt 并随视频一起上传
+        if is_hls_segment_subtitle(subtitle_path):
+            console_log(f"   ⏭️  跳过 HLS 分片/播放列表文件: {os.path.basename(subtitle_path)}")
+            self.logger.info(f"跳过 HLS 分片/播放列表文件: {subtitle_path}")
             return False
 
         try:

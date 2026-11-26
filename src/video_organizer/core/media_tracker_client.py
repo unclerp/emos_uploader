@@ -528,14 +528,18 @@ class MediaTrackerClient:
             clear_file_id()
             return
         logger.info("\u5904\u7406 media_deleted: sha256=%s...", sha256[:16])
-        if self.emya_controller:
-            result = self.emya_controller.delete_media_by_sha256(sha256)
+        if self.emya_import and self.emya_controller:
+            result = self.emya_controller.delete_media_by_sha256(
+                sha256,
+                file_name=payload.get("file_name"),
+                file_size=payload.get("file_size"),
+            )
             if result.success:
                 logger.info("emya \u5220\u9664\u6210\u529f: %s", result.message)
             else:
                 logger.warning("emya \u5220\u9664\u5931\u8d25: %s", result.message)
         else:
-            logger.info("emya_controller \u672a\u542f\u7528\uff0c\u8df3\u8fc7\u5220\u9664")
+            logger.info("emya \u672a\u542f\u7528\uff08emya_import=False\uff09\uff0c\u8df3\u8fc7\u5220\u9664")
         clear_file_id()
 
     def _handle_media_updated_sync(self, payload: Dict):
@@ -577,8 +581,12 @@ class MediaTrackerClient:
         quality_tags = self.renamer._extract_keywords(Path(renamed_filename).stem) if self.renamer else None
 
         # Step 2: \u5220\u9664\u65e7 media\uff08\u786c\u5220\u9664\u94fe\uff09
-        if self.emya_controller:
-            delete_result = self.emya_controller.delete_media_by_sha256(sha256)
+        if self.emya_import and self.emya_controller:
+            delete_result = self.emya_controller.delete_media_by_sha256(
+                sha256,
+                file_name=file_name,
+                file_size=file_size or None,
+            )
             if delete_result.success:
                 logger.info("emya \u65e7\u8bb0\u5f55\u5220\u9664\u6210\u529f: %s", delete_result.message)
             else:

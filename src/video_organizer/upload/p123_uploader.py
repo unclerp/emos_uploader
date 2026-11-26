@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from colorama import Fore, init
 
+from ..core.subtitle_handler import plan_subtitle_uploads
+
 # 初始化 colorama
 init(autoreset=True)
 
@@ -196,18 +198,21 @@ class P123Uploader:
         media_info: Optional[Dict[str, Any]] = None,
         rename_to: Optional[str] = None,
         folder_structure: Optional[list] = None,
+        subtitle_scan_path: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         上传视频到 123 云盘
 
         Args:
-            file_path: 本地文件路径
+            file_path: 本地文件路径（洗码开启时为临时副本）
             item_type: 媒体类型（用于创建子文件夹: movie/tv）
             item_id: 媒体ID（123云盘不需要）
             file_storage: 存储类型（123云盘不需要）
             media_info: 媒体信息字典，包含 title, season_episode 等
             rename_to: 上传后的重命名文件名（如果为None则使用原文件名）
             folder_structure: 目标文件夹层级列表，例如 ["TV Shows", "Show Name", "Season 01"]
+            subtitle_scan_path: 扫描同目录字幕的路径（洗码副本与原视频不同目录，
+                字幕仍在原视频旁边，必须显式传入原路径）
 
         Returns:
             上传成功返回文件信息字典，失败返回 None
@@ -305,10 +310,13 @@ class P123Uploader:
                 print(f"\n🎉 123云盘上传成功!")
                 print(f"文件ID: {result.get('fileid')}")
 
-                # 上传同目录下的字幕文件
+                # 上传同目录下的字幕文件（洗码副本旁边没有字幕，扫原视频目录）
                 print(f"\n📝 开始上传字幕文件...")
                 subtitles = self.upload_subtitles(
-                    file_path, target_parent_id, target_filename, folder_structure
+                    subtitle_scan_path or file_path,
+                    target_parent_id,
+                    target_filename,
+                    folder_structure,
                 )
 
                 # 发送 123FSLinkV2 格式到TG频道
@@ -380,12 +388,12 @@ class P123Uploader:
 
             print(f"\n📝 扫描字幕文件: {video_dir}")
 
-            # 扫描同目录下的所有字幕文件
-            subtitle_files = [
+            # 扫描同目录下的所有字幕文件（排序保证输出顺序稳定）
+            subtitle_files = sorted(
                 f
                 for f in video_dir.iterdir()
                 if f.is_file() and f.suffix.lower() in subtitle_extensions
-            ]
+            )
 
             if not subtitle_files:
                 print(f"   未找到字幕文件")
@@ -393,18 +401,31 @@ class P123Uploader:
 
             print(f"   找到 {len(subtitle_files)} 个字幕文件")
 
-            for subtitle_file in subtitle_files:
+            # 剔除 HLS/DASH 分片（playlistN.vtt 等）并按目标名去重，
+            # 否则 m3u8 下载留下的几十上百个分片会被逐个上传成同一个文件名
+            plans, junk_files, dup_files = plan_subtitle_uploads(
+                subtitle_files,
+                video_filename,
+                lambda f: self._generate_subtitle_name(
+                    video_filename, self._parse_subtitle_info(f.name)
+                ),
+            )
+            if junk_files:
+                print(
+                    f"   ⏭️  跳过 {len(junk_files)} 个 HLS 分片/播放列表文件（非字幕）: "
+                    f"{', '.join(f.name for f in junk_files[:3])}"
+                    f"{' ...' if len(junk_files) > 3 else ''}"
+                )
+            if dup_files:
+                print(
+                    f"   ⏭️  跳过 {len(dup_files)} 个目标名重复的字幕文件（避开覆盖）: "
+                    f"{', '.join(f.name for f in dup_files[:3])}"
+                    f"{' ...' if len(dup_files) > 3 else ''}"
+                )
+
+            for subtitle_file, new_subtitle_name in plans:
                 try:
                     print(f"\n   处理字幕: {subtitle_file.name}")
-
-                    # 解析字幕文件名，提取语言和类型信息
-                    subtitle_info = self._parse_subtitle_info(subtitle_file.name)
-
-                    # 生成新的字幕文件名：使用视频文件名 + 字幕语言/类型信息
-                    new_subtitle_name = self._generate_subtitle_name(
-                        video_filename, subtitle_info
-                    )
-
                     print(f"   重命名为: {new_subtitle_name}")
 
                     # 上传字幕文件
@@ -425,7 +446,7 @@ class P123Uploader:
                     traceback.print_exc()
 
             print(
-                f"\n📝 字幕上传完成: 成功 {len(uploaded_subtitles)}/{len(subtitle_files)} 个"
+                f"\n📝 字幕上传完成: 成功 {len(uploaded_subtitles)}/{len(plans)} 个"
             )
 
         except Exception as e:

@@ -714,11 +714,12 @@ function getSectionLabel(section) {
     const labels = {
         'monitoring': '监控配置', 'tmdb': 'TMDB 配置', 'naming': '命名规则', 'naming_rules': '命名规则',
         'processing': '处理配置', 'logging': '日志配置',
+        'hash_wash': '洗码（哈希规避）',
         'p123': '123云盘', 'cloud189': '天翼云盘', 'yun139': '139云盘',
         'recycle_clean': '回收站清理',
         'emos': 'Emos 云盘', 'telegram': 'Telegram 上传通知',
         'telegram_cloud': 'Telegram 网盘通知', 'telegram_seek': 'Telegram 求片通知',
-        'guessit': 'GuessIt 解析',
+        'guessit': 'GuessIt 解析（已废弃）', 'parser': '文件名解析',
         'emya_db': 'Emby 数据库', 'downloaders': '下载器列表',
         'manual_rules': '手动规则（INI）', 'release_group_mapping': '字幕组映射（INI）',
         'llm_fallback': 'LLM 兜底识别', 'llm_provider_1': 'LLM 提供商 1',
@@ -744,6 +745,10 @@ function renderConfigField(section, key, value) {
         label = 'qB 移动目标目录';
         help = '仅“通过 qB 移动”时必填。填写 qB 可访问的绝对目录，不是上传容器的路径。qB 移动会改为手动管理，保留当前做种或暂停状态。';
         inputHtml = `<input type="text" id="${inputId}" name="${inputName}" value="${escapeHtml(String(value))}" autocomplete="off" spellcheck="false">`;
+    } else if (section === 'parser' && key === 'backend') {
+        label = '文件名解析器';
+        help = '当前使用原生解析器。旧配置中的 guessit 或 hybrid 会自动使用原生解析器。';
+        inputHtml = `<select id="${inputId}" name="${inputName}"><option value="native" selected>原生解析器</option></select>`;
     } else if (typeof value === 'boolean') {
         inputHtml = `<div class="toggle-wrap">
             <div class="toggle-track ${value ? 'on' : ''}" data-for="${inputId}">

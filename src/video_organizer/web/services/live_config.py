@@ -345,6 +345,7 @@ class LiveConfig:
                 "_type_resolve_cache",
                 "_llm_parse_cache",
                 "_season_infer_cache",
+                "_tv_episode_capacity_cache",
             ):
                 setattr(handler.renamer, name, ThreadSafeLRUCache(maxsize=2000))
             handler.renamer._llm_inflight = {}
