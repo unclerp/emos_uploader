@@ -9,6 +9,8 @@ from typing import Dict, Optional, Tuple, Union
 
 from jinja2 import Template
 
+from .part_marker import inject_part_suffix as _inject_part_suffix
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,12 +110,29 @@ def generate_new_path(
     if rule_type is None:
         if media_type == "movie":
             rule_type = "movie"
-        elif media_type == "tv" or (metadata.get("season") and metadata.get("episode")):
+        elif media_type == "tv" or (
+            metadata.get("season") not in (None, "")
+            and metadata.get("episode") not in (None, "")
+        ):
             rule_type = "tv_show"
         else:
             rule_type = "simple"
 
     template = naming_rules.get(rule_type, naming_rules["simple"])
+
+    # ⚙ 分段短篇（Part N）：把分段号作为后缀写进**文件名部分**（与 renamer.py 的
+    # generate_new_path 同逻辑；默认模板没有 {part} 占位符也要生效）
+    if rule_type in ("movie", "simple"):
+        template = _inject_part_suffix(
+            template,
+            str(metadata.get("part") or "").strip(),
+            str(
+                metadata.get("title")
+                or metadata.get("original_title")
+                or metadata.get("show_name")
+                or ""
+            ),
+        )
 
     season, episode = resolve_season_episode(
         metadata, original_path.name if original_path else ""
@@ -138,19 +157,36 @@ def generate_new_path(
     web_source = f".{metadata.get('web_source')}" if metadata.get("web_source") else ""
     edition = f".{metadata.get('edition')}" if metadata.get("edition") else ""
     part = f".{metadata.get('part')}" if metadata.get("part") else ""
-    video_format = f"{metadata.get('video_format')}" if metadata.get("video_format") else ""
-    video_codec = f".{metadata.get('video_codec')}" if metadata.get("video_codec") else ""
-    audio_codec = f".{metadata.get('audio_codec')}" if metadata.get("audio_codec") else ""
-    customization = f".{metadata.get('customization')}" if metadata.get("customization") else ""
-    customization_suffix = f"-{metadata.get('customization')}" if metadata.get("customization") else ""
-    release_group = f"-{metadata.get('release_group')}" if metadata.get("release_group") else ""
-    release_group_suffix = f"-{metadata.get('release_group')}" if metadata.get("release_group") else ""
+    part_suffix = f" {metadata.get('part')}" if metadata.get("part") else ""
+    video_format = (
+        f"{metadata.get('video_format')}" if metadata.get("video_format") else ""
+    )
+    video_codec = (
+        f".{metadata.get('video_codec')}" if metadata.get("video_codec") else ""
+    )
+    audio_codec = (
+        f".{metadata.get('audio_codec')}" if metadata.get("audio_codec") else ""
+    )
+    customization = (
+        f".{metadata.get('customization')}" if metadata.get("customization") else ""
+    )
+    customization_suffix = (
+        f"-{metadata.get('customization')}" if metadata.get("customization") else ""
+    )
+    release_group = (
+        f"-{metadata.get('release_group')}" if metadata.get("release_group") else ""
+    )
+    release_group_suffix = (
+        f"-{metadata.get('release_group')}" if metadata.get("release_group") else ""
+    )
 
     season_episode = f"S{s_str}E{e_str}"
 
     format_vars = {
         "title": sanitize_fn(
-            metadata.get("title") or metadata.get("original_title") or metadata.get("show_name", "Unknown Title")
+            metadata.get("title")
+            or metadata.get("original_title")
+            or metadata.get("show_name", "Unknown Title")
         ),
         "year": metadata.get("year", ""),
         "year_suffix": year_suffix,
@@ -165,6 +201,7 @@ def generate_new_path(
         "web_source": web_source,
         "edition": edition,
         "part": part,
+        "part_suffix": part_suffix,
         "video_format": video_format,
         "video_codec": video_codec,
         "audio_codec": audio_codec,
@@ -174,21 +211,29 @@ def generate_new_path(
         "release_group_suffix": release_group_suffix,
         "season_episode": season_episode,
         "show_name": sanitize_fn(
-            metadata.get("show_name", metadata.get("original_show_name", "Unknown Show"))
+            metadata.get(
+                "show_name", metadata.get("original_show_name", "Unknown Show")
+            )
         ),
         "season": season,
         "episode": episode,
         "episode_name": sanitize_fn(metadata.get("episode_name", "")),
         "movie_name": sanitize_fn(
-            metadata.get("title") or metadata.get("original_title") or metadata.get("show_name", "Unknown Movie")
+            metadata.get("title")
+            or metadata.get("original_title")
+            or metadata.get("show_name", "Unknown Movie")
         ),
         "anime_name": sanitize_fn(
-            metadata.get("show_name", metadata.get("original_show_name", "Unknown Anime"))
+            metadata.get(
+                "show_name", metadata.get("original_show_name", "Unknown Anime")
+            )
         ),
         "season_name": f"Season {s_str}",
         "quality_tags": metadata.get("quality_tags", ""),
         "quality_tags_suffix": (
-            f" {metadata.get('quality_tags', '')}" if metadata.get("quality_tags", "") else ""
+            f" {metadata.get('quality_tags', '')}"
+            if metadata.get("quality_tags", "")
+            else ""
         ),
     }
 
@@ -204,7 +249,11 @@ def generate_new_path(
         if "{{" in template and "}}" in template:
             jinja_template = Template(template)
             jinja_vars = {
-                "title": format_vars["show_name"] if format_vars.get("show_name") else format_vars.get("movie_name", "Unknown Title"),
+                "title": (
+                    format_vars["show_name"]
+                    if format_vars.get("show_name")
+                    else format_vars.get("movie_name", "Unknown Title")
+                ),
                 "year": year,
                 "tmdbid": tmdb_id,
                 "season": season,
@@ -217,6 +266,8 @@ def generate_new_path(
                 "audioCodec": metadata.get("audio_codec", ""),
                 "customization": metadata.get("customization", ""),
                 "releaseGroup": metadata.get("release_group", ""),
+                "part": metadata.get("part", ""),
+                "part_suffix": format_vars["part_suffix"],
                 "fileExt": file_ext,
                 "quality_tags": format_vars["quality_tags"],
                 "quality_tags_suffix": format_vars["quality_tags_suffix"],
@@ -233,7 +284,9 @@ def generate_new_path(
 
             tmdbid_placeholder = "__TMDBID_PLACEHOLDER__"
             if tmdb_id:
-                processed_template = processed_template.replace("{tmdbid=tmdbid}", tmdbid_placeholder)
+                processed_template = processed_template.replace(
+                    "{tmdbid=tmdbid}", tmdbid_placeholder
+                )
             else:
                 processed_template = processed_template.replace(" {tmdbid=tmdbid}", "")
                 processed_template = processed_template.replace("{tmdbid=tmdbid}", "")
@@ -264,7 +317,9 @@ def generate_new_path(
         logger.info(f"generate_new_path output: {full_path}")
         return full_path
     except KeyError as e:
-        logger.error(f"Naming template missing required variable: {e}. Using default path structure.")
+        logger.error(
+            f"Naming template missing required variable: {e}. Using default path structure."
+        )
         if not metadata.get("show_name"):
             raise ValueError("Cannot generate path without show name")
 
@@ -273,8 +328,12 @@ def generate_new_path(
         episode = metadata.get("episode", "1")
         episode_name = sanitize_fn(metadata.get("episode_name", ""))
 
-        season_str = f"Season {int(season):02d}" if str(season).isdigit() else f"Season {season}"
-        episode_str = f"E{int(episode):02d}" if str(episode).isdigit() else f"E{episode}"
+        season_str = (
+            f"Season {int(season):02d}" if str(season).isdigit() else f"Season {season}"
+        )
+        episode_str = (
+            f"E{int(episode):02d}" if str(episode).isdigit() else f"E{episode}"
+        )
 
         filename_parts = [show_name, f"S{int(season):02d}{episode_str}"]
         if episode_name:
