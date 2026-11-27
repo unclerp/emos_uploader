@@ -8,6 +8,7 @@
   （见「已知问题」），必须先 `--ignore` 或按上面的方式指定路径
 - **运行单个测试文件:** `pytest tests/unit/test_core/test_renamer.py`
 - **上传进度前端回归:** `node --input-type=module -e 'import("./tests/frontend/upload_progress.mjs").then(m => m.runTests()).then(r => console.log(r.length + " passed"))'`
+- **最近活动前端回归:** `node --input-type=module -e 'import("./tests/frontend/recent_activity.mjs").then(m => m.runTests()).then(r => console.log(r.length + " passed"))'`
 - **运行单个测试:** `pytest tests/unit/test_core/test_manual_rule_engine.py::TestManualRuleEngine::test_locked_fields_union`
 - **格式化:** `black .`（⚠️ 当前 53/76 文件不符合 black，全量格式化会产生巨大 diff，
   只对改动文件执行 `black <file>`）

@@ -104,12 +104,12 @@ async function loadTaskListPaginated(page = 1, pageSize = 20, status = '', searc
     return await apiRequest(`/tasks/list?${params.toString()}`);
 }
 
-async function loadRecentActivityPaginated(page = 1, pageSize = 20, search = '') {
+async function loadRecentActivityPaginated(page = 1, pageSize = 20, search = '', signal) {
     const params = new URLSearchParams();
     params.set('page', page);
     params.set('page_size', pageSize);
     if (search) params.set('search', search);
-    return await apiRequest(`/tasks/recent?${params.toString()}`);
+    return await apiRequest(`/tasks/recent?${params.toString()}`, { signal });
 }
 
 async function loadConfigFromApi() {

@@ -288,11 +288,12 @@ function startAutoRefresh() {
         }
         if (document.querySelector('#page-tasks.active')) loadTasks();
         if (!dashboardState.isConnected) {
-            if (document.querySelector('#page-dashboard.active')) updateRecentActivity();
+            if (document.querySelector('#page-dashboard.active')) requestRecentActivityRefresh();
         }
         if (document.querySelector('#page-dashboard.active') && Date.now() - uploadState.lastSnapshotAt >= 10000) {
             loadUploadProgress();
         }
+        if (document.querySelector('#page-dashboard.active')) refreshRecentActivityTimes();
     }, 5000);
 }
 
@@ -482,26 +483,162 @@ function formatRelativeTime(isoTime) {
     return `${Math.floor(months / 12)}年前`;
 }
 
+const recentActivityView = { rows: new Map(), queryKey: null, requestId: 0, controller: null, loadingQuery: null, refreshPending: false, initialized: false };
+
+function getRecentActivityQuery() {
+    return { page: state.recentPage, pageSize: state.recentPageSize, search: state.recentSearch };
+}
+
+function recentActivityQueryKey(query) {
+    return JSON.stringify([query.page, query.pageSize, query.search]);
+}
+
+function setActivityText(element, value) {
+    const text = String(value ?? '');
+    if (element.textContent !== text) element.textContent = text;
+}
+
+function setActivityClass(element, value) {
+    if (element.className !== value) element.className = value;
+}
+
+function createActivityRow() {
+    const row = document.createElement('div');
+    row.className = 'activity-item';
+    row.activityCells = {};
+    for (const name of ['dot', 'path', 'status', 'time']) {
+        const cell = document.createElement('div');
+        cell.className = `activity-${name}`;
+        row.activityCells[name] = cell;
+        row.appendChild(cell);
+    }
+    return row;
+}
+
+function showRecentActivityEmpty(message) {
+    let empty = el.recentActivity.firstElementChild;
+    if (!empty || !empty.classList.contains('empty-state')) {
+        for (const child of Array.from(el.recentActivity.children)) child.remove();
+        empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.appendChild(document.createElement('p'));
+        el.recentActivity.appendChild(empty);
+    }
+    setActivityText(empty.firstElementChild, message);
+}
+
+function renderRecentActivity(data, query) {
+    if (!el.recentActivity || !Array.isArray(data.items)) return;
+    const key = recentActivityQueryKey(query);
+    const animateNew = recentActivityView.initialized && recentActivityView.queryKey === key && query.page === 1;
+    const nextRows = new Map();
+    for (const item of data.items) {
+        const itemKey = item.id != null ? `task:${item.id}` : `legacy:${JSON.stringify([item.path, item.targets, item.time])}`;
+        if (nextRows.has(itemKey)) continue;
+        let row = recentActivityView.rows.get(itemKey);
+        if (!row) {
+            row = createActivityRow();
+            row.dataset.activityKey = itemKey;
+            if (animateNew) {
+                row.classList.add('activity-item-new');
+                row.addEventListener('animationend', () => row.classList.remove('activity-item-new'), { once: true });
+            }
+        }
+        const cells = row.activityCells;
+        const tone = activityStatusTone(item.status);
+        setActivityClass(cells.dot, `activity-dot activity-dot-${tone}`);
+        setActivityClass(cells.status, `activity-status activity-status-${tone}`);
+        setActivityText(cells.path, item.path);
+        if (cells.path.title !== item.path) cells.path.title = item.path;
+        setActivityText(cells.status, taskStatusLabel(item));
+        row.activityTimestamp = item.time;
+        setActivityText(cells.time, formatRelativeTime(item.time));
+        nextRows.set(itemKey, row);
+    }
+    // 只移除离开当前页的条目；未变条目保留节点、选中文字和鼠标状态。
+    if (nextRows.size === 0) {
+        showRecentActivityEmpty('暂无数据');
+    } else {
+        const wanted = new Set(nextRows.values());
+        for (const child of Array.from(el.recentActivity.children)) {
+            if (!wanted.has(child)) child.remove();
+        }
+        let index = 0;
+        for (const row of nextRows.values()) {
+            const current = el.recentActivity.children[index] || null;
+            if (current !== row) el.recentActivity.insertBefore(row, current);
+            index++;
+        }
+    }
+    recentActivityView.rows = nextRows;
+    recentActivityView.queryKey = key;
+    recentActivityView.initialized = true;
+    state.recentTotal = data.total || 0;
+    updateRecentPagination({ ...data, page: query.page, page_size: query.pageSize });
+}
+
+function refreshRecentActivityTimes() {
+    for (const row of recentActivityView.rows.values()) {
+        setActivityText(row.activityCells.time, formatRelativeTime(row.activityTimestamp));
+    }
+}
+
 async function updateRecentActivity() {
+    const query = getRecentActivityQuery();
+    const key = recentActivityQueryKey(query);
+    const requestId = ++recentActivityView.requestId;
+    recentActivityView.controller?.abort();
+    const controller = new AbortController();
+    recentActivityView.controller = controller;
+    recentActivityView.loadingQuery = key;
+    recentActivityView.refreshPending = false;
+    const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-        const data = await loadRecentActivityPaginated(state.recentPage, state.recentPageSize, state.recentSearch);
-        const items = data.items || [];
-        state.recentTotal = data.total || 0;
-        if (items.length === 0) {
-            el.recentActivity.innerHTML = `<div class="empty-state"><p>暂无数据</p></div>`;
-        } else {
-            el.recentActivity.innerHTML = items.map((t, i) => `<div class="activity-item" style="animation-delay:${i * 30}ms">
-                <div class="activity-dot activity-dot-${activityStatusTone(t.status)}"></div>
-                <div class="activity-path" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
-                <div class="activity-status activity-status-${activityStatusTone(t.status)}">${taskStatusLabel(t)}</div>
-                <div class="activity-time">${formatRelativeTime(t.time)}</div>
-            </div>`).join('');
-        }
-        updateRecentPagination(data);
+        const data = await loadRecentActivityPaginated(query.page, query.pageSize, query.search, controller.signal);
+        if (requestId !== recentActivityView.requestId || key !== recentActivityQueryKey(getRecentActivityQuery())) return;
+        renderRecentActivity(data, query);
     } catch (e) {
-        if (!e.message.includes('登录已过期')) {
-            el.recentActivity.innerHTML = `<div class="empty-state"><p>加载失败</p></div>`;
+        if (requestId === recentActivityView.requestId && key === recentActivityQueryKey(getRecentActivityQuery()) && !e.message.includes('登录已过期')) {
+            if (!recentActivityView.initialized || recentActivityView.queryKey !== key) {
+                showRecentActivityEmpty('加载失败');
+                recentActivityView.rows = new Map();
+                recentActivityView.initialized = false;
+            }
+            console.error('[Recent activity] 更新失败:', e);
         }
+    } finally {
+        clearTimeout(timeout);
+        if (requestId === recentActivityView.requestId) {
+            recentActivityView.controller = null;
+            recentActivityView.loadingQuery = null;
+            const pending = recentActivityView.refreshPending;
+            recentActivityView.refreshPending = false;
+            if (pending && key === recentActivityQueryKey(getRecentActivityQuery())) updateRecentActivity();
+        }
+    }
+}
+
+function requestRecentActivityRefresh() {
+    const key = recentActivityQueryKey(getRecentActivityQuery());
+    if (recentActivityView.loadingQuery === key) {
+        // 连续推送或轮询合并成一次补查，避免反复取消慢请求。
+        recentActivityView.refreshPending = true;
+    } else {
+        updateRecentActivity();
+    }
+}
+
+function refreshRecentActivityFromPush(recent) {
+    const query = getRecentActivityQuery();
+    if (query.page === 1 && query.pageSize === 20 && !query.search) {
+        recentActivityView.requestId++;
+        recentActivityView.controller?.abort();
+        recentActivityView.controller = null;
+        recentActivityView.loadingQuery = null;
+        recentActivityView.refreshPending = false;
+        renderRecentActivity(recent, query);
+    } else {
+        requestRecentActivityRefresh();
     }
 }
 
@@ -510,9 +647,9 @@ function updateRecentPagination(data) {
     const page = data.page || 1;
     const pageSize = data.page_size || 20;
     const totalPages = Math.ceil(total / pageSize) || 1;
-    if (el.recentTotal) el.recentTotal.textContent = total;
-    if (el.recentPage) el.recentPage.textContent = page;
-    if (el.recentTotalPages) el.recentTotalPages.textContent = totalPages;
+    if (el.recentTotal) setActivityText(el.recentTotal, total);
+    if (el.recentPage) setActivityText(el.recentPage, page);
+    if (el.recentTotalPages) setActivityText(el.recentTotalPages, totalPages);
     if (el.recentPrevBtn) el.recentPrevBtn.disabled = page <= 1;
     if (el.recentNextBtn) el.recentNextBtn.disabled = page >= totalPages;
     if (el.recentPagination) el.recentPagination.style.display = total > 0 ? 'flex' : 'none';
@@ -1617,36 +1754,7 @@ function handleDashboardUpdate(data) {
     }
     if (data.stats) state.dashboardResolved = data.stats.resolved || 0;
     if (document.getElementById('page-tasks')?.classList.contains('active')) updateTaskList();
-    // 更新最近活动
-    if (data.recent) {
-        const items = data.recent.items || [];
-        state.recentTotal = data.recent.total || 0;
-        if (items.length === 0) {
-            el.recentActivity.innerHTML = `<div class="empty-state"><p>暂无数据</p></div>`;
-        } else {
-            el.recentActivity.innerHTML = items.map((t, i) => `<div class="activity-item" style="animation-delay:${i * 30}ms">
-                <div class="activity-dot activity-dot-${activityStatusTone(t.status)}"></div>
-                <div class="activity-path" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
-                <div class="activity-status activity-status-${activityStatusTone(t.status)}">${taskStatusLabel(t)}</div>
-                <div class="activity-time">${formatRelativeTime(t.time)}</div>
-            </div>`).join('');
-        }
-        // 重置分页到第一页
-        state.recentPage = 1;
-        if (el.recentTotal) el.recentTotal.textContent = data.recent.total || 0;
-        if (el.recentPage) el.recentPage.textContent = 1;
-        const recentPs = state.recentPageSize || 20;
-        if (el.recentTotalPages) {
-            const totalPages = Math.ceil((data.recent.total || 0) / recentPs) || 1;
-            el.recentTotalPages.textContent = totalPages;
-        }
-        if (el.recentPrevBtn) el.recentPrevBtn.disabled = true;
-        if (el.recentNextBtn) {
-            const totalPages = Math.ceil((data.recent.total || 0) / recentPs) || 1;
-            el.recentNextBtn.disabled = 1 >= totalPages;
-        }
-        if (el.recentPagination) el.recentPagination.style.display = (data.recent.total || 0) > 0 ? 'flex' : 'none';
-    }
+    if (data.recent) refreshRecentActivityFromPush(data.recent);
 }
 
 // ===== 上传进度 WebSocket（带指数退避重连）=====

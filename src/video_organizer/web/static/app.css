@@ -340,8 +340,8 @@ table .col-actions { min-width: 110px; }
     border-bottom: 1px solid var(--border);
     transition: all 0.2s;
     position: relative;
-    animation: activitySlideIn 0.3s ease both;
 }
+.activity-item-new { animation: activitySlideIn 0.3s ease both; }
 .activity-item:last-child { border-bottom: none; }
 .activity-item:hover {
     background: color-mix(in srgb, var(--accent) 4%, transparent);
