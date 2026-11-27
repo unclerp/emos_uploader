@@ -211,8 +211,8 @@ async function retryAllFailedViaApi() {
     return await apiRequest('/tasks/retry-all', { method: 'POST' });
 }
 
-async function loadUploadProgressFromApi() {
-    return await apiRequest('/tasks/progress');
+async function loadUploadProgressFromApi(signal) {
+    return await apiRequest('/tasks/progress', { signal });
 }
 
 // ===== 数据库配置 API =====

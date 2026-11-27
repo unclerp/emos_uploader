@@ -290,6 +290,9 @@ function startAutoRefresh() {
         if (!dashboardState.isConnected) {
             if (document.querySelector('#page-dashboard.active')) updateRecentActivity();
         }
+        if (document.querySelector('#page-dashboard.active') && Date.now() - uploadState.lastSnapshotAt >= 10000) {
+            loadUploadProgress();
+        }
     }, 5000);
 }
 
@@ -1648,35 +1651,40 @@ function handleDashboardUpdate(data) {
 
 // ===== 上传进度 WebSocket（带指数退避重连）=====
 
-const uploadState = { progresses: {}, ws: null, reconnectTimer: null, reconnectAttempt: 0, isConnected: false };
+const uploadState = { progresses: {}, ws: null, reconnectTimer: null, reconnectAttempt: 0, isConnected: false, lastSnapshotAt: 0, syncVersion: 0, snapshotLoading: false };
 const WS_BASE_DELAY = 1000;
 const WS_MAX_DELAY = 30000;
 
 function connectUploadProgressWebSocket() {
     if (uploadState.ws) return;
     try {
-        uploadState.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/tasks/ws/progress`);
-        uploadState.ws.onopen = () => {
+        const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/tasks/ws/progress`);
+        uploadState.ws = ws;
+        ws.onopen = () => {
+            if (uploadState.ws !== ws) return;
             const token = getAuthToken();
-            if (token) uploadState.ws.send(JSON.stringify({ type: 'auth', token }));
+            if (token) ws.send(JSON.stringify({ type: 'auth', token }));
             uploadState.isConnected = true;
             uploadState.reconnectAttempt = 0;
             updateUploadStatusDot(true);
             loadUploadProgress();
         };
-        uploadState.ws.onmessage = (event) => {
+        ws.onmessage = (event) => {
+            if (uploadState.ws !== ws) return;
             try {
                 const data = JSON.parse(event.data);
-                if (data.type === 'progress') handleUploadProgressUpdate(data);
+                if (data.type === 'snapshot') applyUploadProgressSnapshot(data);
+                else if (data.type === 'progress') handleUploadProgressUpdate(data);
             } catch (e) { console.error('[Upload] 解析消息失败:', e); }
         };
-        uploadState.ws.onclose = () => {
+        ws.onclose = () => {
+            if (uploadState.ws !== ws) return;
             uploadState.isConnected = false;
             updateUploadStatusDot(false);
             uploadState.ws = null;
             scheduleReconnect();
         };
-        uploadState.ws.onerror = () => {};
+        ws.onerror = () => {};
     } catch (e) { console.error('[Upload] 连接失败:', e); scheduleReconnect(); }
 }
 
@@ -1691,25 +1699,53 @@ function scheduleReconnect() {
 }
 
 function disconnectUploadProgressWebSocket() {
-    if (uploadState.ws) { uploadState.ws.close(); uploadState.ws = null; }
+    const ws = uploadState.ws;
+    uploadState.ws = null;
+    uploadState.isConnected = false;
+    uploadState.syncVersion++;
+    if (ws) ws.close();
     if (uploadState.reconnectTimer) { clearTimeout(uploadState.reconnectTimer); uploadState.reconnectTimer = null; }
 }
 
 async function loadUploadProgress() {
+    if (uploadState.snapshotLoading) return;
+    uploadState.snapshotLoading = true;
+    const version = uploadState.syncVersion;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-        const result = await loadUploadProgressFromApi();
-        if (result && result.progresses) {
-            uploadState.progresses = result.progresses;
-            updateUploadProgressList();
-        }
+        const result = await loadUploadProgressFromApi(controller.signal);
+        // 请求期间收到更新的 WebSocket 状态时，旧响应不能覆盖它。
+        if (version === uploadState.syncVersion) applyUploadProgressSnapshot(result);
     } catch (e) { console.error('[Upload] 加载进度失败:', e); }
+    finally {
+        clearTimeout(timeout);
+        uploadState.snapshotLoading = false;
+    }
+}
+
+function applyUploadProgressSnapshot(data) {
+    if (!data || !data.progress || typeof data.progress !== 'object' || Array.isArray(data.progress)) return;
+    uploadState.progresses = data.progress;
+    uploadState.lastSnapshotAt = Date.now();
+    uploadState.syncVersion++;
+    updateUploadProgressList();
 }
 
 function handleUploadProgressUpdate(data) {
     const { file_path, filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error } = data;
-    uploadState.progresses[file_path] = { filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error, timestamp: Date.now() };
+    const entry = { filename, uploader, progress, uploaded_bytes, total_bytes, speed, status, error, timestamp: Date.now() };
+    uploadState.progresses[file_path] = entry;
+    uploadState.syncVersion++;
     if (['completed', 'skipped', 'failed'].includes(status)) {
-        setTimeout(() => { delete uploadState.progresses[file_path]; updateUploadProgressList(); }, 5000);
+        setTimeout(() => {
+            // 同一路径开始重试后，旧任务的清理计时器不能删除新进度。
+            if (uploadState.progresses[file_path] === entry) {
+                delete uploadState.progresses[file_path];
+                uploadState.syncVersion++;
+                updateUploadProgressList();
+            }
+        }, 5000);
     }
     updateUploadProgressList();
 }

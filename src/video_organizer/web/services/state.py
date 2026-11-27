@@ -12,12 +12,15 @@ import logging
 import asyncio
 from typing import Any, Dict, List, Optional, Set, Callable
 from pathlib import Path
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 
 from ...database.operations import get_completed_tasks as db_get_completed
 from ...database.operations import get_failed_tasks as db_get_failed
 from ...database.operations import get_task_counts as db_get_task_counts
+
+PROGRESS_TERMINAL_STATUSES = frozenset(("completed", "skipped", "failed"))
+PROGRESS_FINISHED_RETENTION_SECONDS = 5
 
 
 @dataclass
@@ -455,22 +458,45 @@ class StateManager:
             progress: 上传进度对象
         """
         with self._state_lock:
+            previous = self._upload_progress.get(progress.file_path)
+            if (
+                previous is not None
+                and previous.status in PROGRESS_TERMINAL_STATUSES
+                and progress.status == "uploading"
+                and progress.progress != 0
+            ):
+                return  # 迟到的分片进度不能把已结束任务改回上传中；新一轮从 0 开始。
+            if progress.last_update is None:
+                progress = replace(progress, last_update=datetime.now())
             self._upload_progress[progress.file_path] = progress
+            callbacks = list(self._progress_callbacks)
+        # 回调可能写入 WebSocket 队列，不持有状态锁调用外部代码。
+        for callback in callbacks:
+            try:
+                callback(progress)
+            except Exception as e:
+                self._logger.error(f"进度回调执行失败: {e}")
 
-            # 调用所有回调
-            for callback in self._progress_callbacks:
-                try:
-                    callback(progress)
-                except Exception as e:
-                    self._logger.error(f"进度回调执行失败: {e}")
+    def _prune_finished_progress(self) -> None:
+        """调用方持有状态锁；仅回收已结束条目，不能按静默时长误删上传。"""
+        cutoff = datetime.now() - timedelta(seconds=PROGRESS_FINISHED_RETENTION_SECONDS)
+        for path, progress in list(self._upload_progress.items()):
+            if progress.status in PROGRESS_TERMINAL_STATUSES and (
+                progress.last_update is None or progress.last_update <= cutoff
+            ):
+                del self._upload_progress[path]
 
     def get_upload_progress(self, file_path: str) -> Optional[UploadProgress]:
         """获取指定文件的上传进度"""
-        return self._upload_progress.get(file_path)
+        with self._state_lock:
+            self._prune_finished_progress()
+            return self._upload_progress.get(file_path)
 
     def get_all_upload_progress(self) -> Dict[str, UploadProgress]:
         """获取所有上传进度"""
-        return self._upload_progress.copy()
+        with self._state_lock:
+            self._prune_finished_progress()
+            return self._upload_progress.copy()
 
     def clear_upload_progress(self, file_path: str) -> None:
         """清除指定文件的上传进度"""

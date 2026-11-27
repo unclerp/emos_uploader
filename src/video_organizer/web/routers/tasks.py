@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
 from ..services.state import get_state_manager
@@ -419,51 +420,14 @@ async def get_upload_progress():
 
 @router.websocket("/ws/progress")
 async def websocket_progress(websocket: WebSocket):
-    """
-    WebSocket 实时上传进度流
-
-    通过 WebSocket 实时推送上传进度更新。
-    """
+    """连接后立即发送完整进度，每 5 秒校准，补齐断线期间错过的结束事件。"""
     await websocket.accept()
-
-    state = get_state_manager()
-    progress_queue = []
-    queue_lock = threading.Lock()
-
-    def on_progress(progress):
-        """进度更新回调"""
-        with queue_lock:
-            progress_queue.append(
-                {
-                    "type": "progress",
-                    "file_path": progress.file_path,
-                    "filename": progress.filename,
-                    "uploader": progress.uploader,
-                    "progress": progress.progress,
-                    "uploaded_bytes": progress.uploaded_bytes,
-                    "total_bytes": progress.total_bytes,
-                    "speed": progress.speed,
-                    "status": progress.status,
-                    "error": progress.error,
-                }
-            )
-
-    # 注册回调
-    state.register_progress_callback(on_progress)
-
     try:
         while True:
-            # 发送队列中的进度更新
-            with queue_lock:
-                if progress_queue:
-                    for msg in progress_queue:
-                        await websocket.send_json(msg)
-                    progress_queue.clear()
-
-            # 发送心跳（5秒间隔）
-            await websocket.send_json({"type": "heartbeat"})
-
-            # 等待
+            snapshot = await get_upload_progress()
+            await websocket.send_json(
+                {"type": "snapshot", **jsonable_encoder(snapshot)}
+            )
             await asyncio.sleep(5)
 
     except WebSocketDisconnect:
@@ -471,8 +435,6 @@ async def websocket_progress(websocket: WebSocket):
     except Exception as e:
         logger.debug(f"进度 WebSocket 连接关闭: {e}")
     finally:
-        # 注销回调
-        state.unregister_progress_callback(on_progress)
         try:
             await websocket.close()
         except:
